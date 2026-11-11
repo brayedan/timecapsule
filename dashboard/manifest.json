@@ -1,0 +1,1 @@
+{"api":"plugin_api.py","css":"dist/style.css","description":"Sealed messages for later — browse capsules (metadata only until they open), seal new ones, and watch the grace and deletion countdowns.","entry":"dist/index.js","icon":"Hourglass","label":"Time Capsule","name":"timecapsule","tab":{"path":"/timecapsule","position":"after:skills"},"version":"0.1.0"}

@@ -1,0 +1,23 @@
+name: timecapsule
+version: "0.1.0"
+manifest_version: 2
+api_version: 1
+requires_hermes: ">=0.23.0"
+license: MIT
+homepage: https://github.com/brayedan/timecapsule
+description: "Sealed messages for later: seal a note so it cannot be read until its release condition is met (a date, N days of silence, or the sealer's explicit release), with a grace ladder and slow, announced deletion. Local-only, stdlib only, no network."
+tags: [time-capsule, dead-man-switch, messages, privacy, local-first]
+provides_tools:
+  - timecapsule_seal
+  - timecapsule_list
+  - timecapsule_open
+  - timecapsule_delete
+  - timecapsule_restore
+  - timecapsule_reseal
+  - timecapsule_status
+config_schema:
+  timecapsule_root:
+    type: str
+    default: ""
+    label: "Capsule store root"
+    description: "Directory holding store.json. Empty = the plugin's own data directory."
