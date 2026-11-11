@@ -101,7 +101,7 @@ and show the announcement.
 
 ## Dashboard tab
 
-**Time Capsule** (path `/timecapsule`, Sunface dark/gold) — the human
+**Time Capsule** (path `/timecapsule`) — the human
 experience layer, reading the same `store.json` the tools use. No
 second copy of the state.
 

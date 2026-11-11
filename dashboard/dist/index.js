@@ -7,8 +7,8 @@
    own methods; no button is offered for anything the capsule's state
    does not allow.
 
-   Presentation uses the Sunface UI Kit (dist/sunface-kit.js +
-   dist/sunface-kit.css), loaded best-effort at the bottom of this
+   Presentation uses the UI Kit (dist/ui-kit.js +
+   dist/ui-kit.css), loaded best-effort at the bottom of this
    file. Every kit call has a local fallback, so the tab renders
    correctly with or without the kit — the kit is an upgrade, not a
    dependency. A 1-second tick keeps the countdowns live and picks up
@@ -30,7 +30,7 @@
     return React.createElement.apply(React, [type, props].concat(children));
   }
 
-  /* ---- Sunface UI Kit, best-effort ------------------------------------
+  /* ---- UI Kit, best-effort ------------------------------------
      Derive the dist/ base URL from this entry script's own URL and
      inject the kit script + stylesheet. If the host loads the entry in
      a way that hides its URL, nothing loads and the local fallbacks
@@ -50,20 +50,20 @@
         }
       }
       if (!base) return;
-      if (!window.SunfaceKit) {
+      if (!window.UiKit) {
         var s = document.createElement("script");
-        s.src = base + "sunface-kit.js";
+        s.src = base + "ui-kit.js";
         s.async = true;
         document.head.appendChild(s);
       }
       var link = document.createElement("link");
       link.rel = "stylesheet";
-      link.href = base + "sunface-kit.css";
+      link.href = base + "ui-kit.css";
       document.head.appendChild(link);
     } catch (e) { /* the kit is an upgrade, not a dependency */ }
   }
 
-  function kit() { return (typeof window !== "undefined" && window.SunfaceKit) || null; }
+  function kit() { return (typeof window !== "undefined" && window.UiKit) || null; }
 
   function timeAgo(iso) {
     try { return SDK.utils.isoTimeAgo(iso); } catch (e) { return iso || "?"; }

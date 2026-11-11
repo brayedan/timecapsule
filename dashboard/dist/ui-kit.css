@@ -1,0 +1,166 @@
+/* ============================================================================
+   UI Kit — the canonical dashboard theme for Hermes plugin tabs.
+   Version 1.0.0. Dark, gold, clean, legible. No external requests, no
+   fonts, no framework. Vanilla CSS; works alongside the Hermes dashboard
+   host theme (its --color-* variables are used with fallbacks).
+
+   Adoption: copy ui-kit.css + ui-kit.js into your plugin's
+   dashboard/dist/, put `@import url("ui-kit.css");` at the top of
+   your dist/style.css, and call the helpers in window.UiKit from
+   your dist/index.js (with local fallbacks — the tab must work if the
+   kit files are not served). See ui-kit/README.md.
+   ========================================================================== */
+
+/* ---- Design tokens ---------------------------------------------------- */
+:root {
+  /* Accent color. #e8c15a; the token family is defined once here. */
+  --ui-gold: #e8c15a;
+  --ui-gold-bright: #f2d07a;
+  --ui-gold-dim: #b8933a;
+  --ui-gold-faint: rgba(232, 193, 90, 0.06);
+  --ui-gold-soft: rgba(232, 193, 90, 0.12);
+  --ui-gold-border: rgba(232, 193, 90, 0.35);
+
+  /* Surfaces — void black, panel, raised. */
+  --ui-void: #0a0908;
+  --ui-panel: #121110;
+  --ui-panel-2: #171512;
+  --ui-border: #2a2620;
+
+  /* Ink — warm off-white, muted, faint. */
+  --ui-ink: #e8e2d4;
+  --ui-muted: #9a917e;
+  --ui-faint: #6b6355;
+
+  /* Status — live/open, danger, warning, neutral. */
+  --ui-green: #7fb069;
+  --ui-red: #d96a5f;
+  --ui-amber: #e8a33d;
+  --ui-grey: #8a8578;
+
+  /* Shape + motion. */
+  --ui-radius: 8px;
+  --ui-radius-sm: 6px;
+  --ui-transition: background-color 0.15s ease, border-color 0.15s ease,
+    color 0.15s ease, opacity 0.15s ease;
+}
+
+/* ---- Page + layout ---------------------------------------------------- */
+.sf-page { max-width: 1100px; margin: 0 auto; }
+.sf-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+.sf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; margin-top: 12px; }
+.sf-kv { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
+@media (max-width: 700px) { .sf-kv { grid-template-columns: 1fr; } }
+.sf-section-title { margin: 16px 0 4px; font-size: 1.25rem; }
+.sf-muted { color: var(--color-muted-foreground, var(--ui-muted)); }
+.sf-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; }
+.sf-note { font-size: 0.85rem; color: var(--color-muted-foreground, var(--ui-muted)); }
+
+/* ---- Cards ------------------------------------------------------------ */
+.sf-card {
+  padding: 16px;
+  border: 1px solid var(--color-border, var(--ui-border));
+  border-radius: var(--radius, var(--ui-radius));
+  background: transparent;
+  transition: var(--ui-transition);
+}
+.sf-card-clickable { cursor: pointer; }
+.sf-card-clickable:hover { background: var(--ui-gold-faint); border-color: var(--ui-gold-border); }
+.sf-card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.sf-card-line { padding: 2px 0; }
+
+/* ---- Status pills ------------------------------------------------------
+   A pill is a small rounded badge: a dot + a word. The class encodes the
+   state; the text is the human word. Use UiKit.pill(status) in JS
+   so the mapping lives in one place. */
+.sf-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 10px; border-radius: 999px;
+  border: 1px solid var(--color-border, var(--ui-border));
+  font-size: 0.85rem; line-height: 1.5; white-space: nowrap;
+}
+.sf-pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.sf-pill-sealed { color: var(--ui-grey); border-color: var(--ui-border); }
+.sf-pill-open { color: var(--ui-green); border-color: rgba(127, 176, 105, 0.4); }
+.sf-pill-grace { color: var(--ui-gold); border-color: var(--ui-gold-border); }
+.sf-pill-dead { color: var(--ui-red); border-color: rgba(217, 106, 95, 0.4); }
+.sf-pill-live { color: var(--ui-gold); border-color: var(--ui-gold-border); }
+.sf-pill-unreachable { color: var(--ui-red); border-color: rgba(217, 106, 95, 0.4); }
+.sf-pill-unhandshaken { color: var(--ui-amber); border-color: rgba(232, 163, 61, 0.4); }
+.sf-pill-unknown { color: var(--ui-grey); border-color: var(--ui-border); }
+
+/* ---- Countdowns --------------------------------------------------------
+   A countdown is a live value: "in 2d 4h", "grace ends in 3h", "expired
+   2h ago". Rendered by UiKit.countdown() once a second; the class
+   only carries the emphasis. */
+.sf-countdown { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; color: var(--ui-gold); }
+.sf-countdown-expired { color: var(--ui-red); }
+.sf-countdown-soon { color: var(--ui-amber); }
+
+/* ---- Buttons ---------------------------------------------------------- */
+.sf-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: var(--radius, var(--ui-radius));
+  border: 1px solid var(--color-border, var(--ui-border));
+  background: transparent; color: inherit; font: inherit; cursor: pointer;
+  transition: var(--ui-transition);
+}
+.sf-btn:hover:not(:disabled) { border-color: var(--ui-gold-border); background: var(--ui-gold-faint); }
+.sf-btn:disabled { opacity: 0.5; cursor: default; }
+.sf-btn-primary { background: var(--ui-gold); border-color: var(--ui-gold); color: #14100a; font-weight: 600; }
+.sf-btn-primary:hover:not(:disabled) { background: var(--ui-gold-bright); border-color: var(--ui-gold-bright); }
+.sf-btn-danger { border-color: rgba(217, 106, 95, 0.5); color: var(--ui-red); }
+.sf-btn-danger:hover:not(:disabled) { background: rgba(217, 106, 95, 0.08); border-color: var(--ui-red); }
+
+/* ---- Forms ------------------------------------------------------------ */
+.sf-field {
+  width: 100%; padding: 8px 10px;
+  border: 1px solid var(--color-border, var(--ui-border));
+  border-radius: var(--radius, var(--ui-radius));
+  background: transparent; color: inherit; font: inherit;
+  transition: var(--ui-transition);
+}
+.sf-field:focus { outline: none; border-color: var(--ui-gold); box-shadow: 0 0 0 2px rgba(232, 193, 90, 0.15); }
+.sf-field-invalid { border-color: var(--ui-red); }
+.sf-field-invalid:focus { border-color: var(--ui-red); box-shadow: 0 0 0 2px rgba(217, 106, 95, 0.15); }
+.sf-field-error { color: var(--ui-red); font-size: 0.85rem; margin-top: 4px; }
+.sf-form { display: flex; flex-direction: column; gap: 12px; margin: 12px 0; padding: 16px; border: 1px solid var(--color-border, var(--ui-border)); border-radius: var(--radius, var(--ui-radius)); }
+.sf-label { font-size: 0.85rem; color: var(--color-muted-foreground, var(--ui-muted)); }
+
+/* ---- Toasts ------------------------------------------------------------
+   A toast is a transient notice (success / error / notice) stacked in
+   the corner. Created by UiKit.toast(); auto-dismisses after 4s.
+   The stack is position: fixed so it survives re-renders. */
+.sf-toast-stack {
+  position: fixed; right: 16px; bottom: 16px; z-index: 1000;
+  display: flex; flex-direction: column; gap: 8px; max-width: min(360px, 90vw);
+}
+.sf-toast {
+  padding: 10px 14px; border-radius: var(--radius, var(--ui-radius));
+  border: 1px solid var(--color-border, var(--ui-border));
+  background: var(--ui-panel-2, #171512); color: var(--ui-ink);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  font-size: 0.9rem; line-height: 1.4;
+  animation: sf-toast-in 0.15s ease;
+}
+.sf-toast-success { border-color: rgba(127, 176, 105, 0.5); }
+.sf-toast-error { border-color: rgba(217, 106, 95, 0.6); }
+.sf-toast-notice { border-color: var(--ui-gold-border); }
+@keyframes sf-toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ---- Logs ------------------------------------------------------------- */
+.sf-log { margin-top: 16px; }
+.sf-log-entry { padding: 6px 0; border-bottom: 1px solid var(--color-border, var(--ui-border)); display: flex; flex-direction: column; gap: 2px; }
+
+/* ---- Content reveal ----------------------------------------------------
+   A released capsule's content: gold-bordered, because it was earned. */
+.sf-content {
+  margin: 16px 0; padding: 16px;
+  border: 1px solid var(--ui-gold); border-radius: var(--radius, var(--ui-radius));
+  background: rgba(232, 193, 90, 0.05);
+}
+.sf-content p { white-space: pre-wrap; word-break: break-word; }
+
+/* ---- Inline feedback (persistent, alongside toasts) ------------------- */
+.sf-error { color: var(--color-destructive, var(--ui-red)); margin-bottom: 12px; }
+.sf-notice { color: var(--ui-gold); margin-bottom: 12px; }

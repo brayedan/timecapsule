@@ -1,6 +1,6 @@
-@import url("sunface-kit.css");
+@import url("ui-kit.css");
 
-/* Time Capsule tab — plugin-specific overrides on the Sunface kit.
+/* Time Capsule tab — plugin-specific overrides on the UI kit.
    The kit carries the tokens (gold, surfaces, status); this file keeps
    only the layout and the classes the tab's index.js renders. If the
    kit file is not served, the @import fails silently and these rules
@@ -8,30 +8,30 @@
 .timecapsule-page { max-width: 1100px; margin: 0 auto; }
 .timecapsule-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
 .timecapsule-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; margin-top: 12px; }
-.timecapsule-card { padding: 16px; border: 1px solid var(--color-border, var(--sf-border)); border-radius: var(--radius, var(--sf-radius)); cursor: pointer; transition: var(--sf-transition); }
-.timecapsule-card:hover { background: var(--sf-gold-faint); border-color: var(--sf-gold-border); }
+.timecapsule-card { padding: 16px; border: 1px solid var(--color-border, var(--ui-border)); border-radius: var(--radius, var(--ui-radius)); cursor: pointer; transition: var(--ui-transition); }
+.timecapsule-card:hover { background: var(--ui-gold-faint); border-color: var(--ui-gold-border); }
 .timecapsule-card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
 .timecapsule-card-line { padding: 2px 0; }
 /* Status dots — the fallback rendering when the kit JS is not loaded.
    With the kit, the tab renders .sf-pill instead; these stay so the
    fallback path still has a visible state. */
-.timecapsule-dot-sealed { color: var(--sf-grey); }
-.timecapsule-dot-grace { color: var(--sf-gold); }
-.timecapsule-dot-open { color: var(--sf-green); }
-.timecapsule-dot-dead { color: var(--color-destructive, var(--sf-red)); }
+.timecapsule-dot-sealed { color: var(--ui-grey); }
+.timecapsule-dot-grace { color: var(--ui-gold); }
+.timecapsule-dot-open { color: var(--ui-green); }
+.timecapsule-dot-dead { color: var(--color-destructive, var(--ui-red)); }
 .timecapsule-detail-title { margin: 12px 0 4px; font-size: 1.25rem; }
 .timecapsule-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
 @media (max-width: 700px) { .timecapsule-detail-grid { grid-template-columns: 1fr; } }
-.timecapsule-content { margin: 16px 0; padding: 16px; border: 1px solid var(--sf-gold); border-radius: var(--radius, var(--sf-radius)); background: rgba(232, 193, 90, 0.05); }
+.timecapsule-content { margin: 16px 0; padding: 16px; border: 1px solid var(--ui-gold); border-radius: var(--radius, var(--ui-radius)); background: rgba(232, 193, 90, 0.05); }
 .timecapsule-content p { white-space: pre-wrap; word-break: break-word; }
-.timecapsule-form { display: flex; flex-direction: column; gap: 12px; margin: 12px 0; padding: 16px; border: 1px solid var(--color-border, var(--sf-border)); border-radius: var(--radius, var(--sf-radius)); }
-.timecapsule-draft { width: 100%; padding: 8px; border: 1px solid var(--color-border, var(--sf-border)); border-radius: var(--radius, var(--sf-radius)); background: transparent; color: inherit; font: inherit; resize: vertical; }
-.timecapsule-draft:focus { outline: none; border-color: var(--sf-gold); box-shadow: 0 0 0 2px rgba(232, 193, 90, 0.15); }
-.timecapsule-draft-invalid { border-color: var(--sf-red); }
-.timecapsule-select { padding: 8px; border: 1px solid var(--color-border, var(--sf-border)); border-radius: var(--radius, var(--sf-radius)); background: transparent; color: inherit; font: inherit; }
-.timecapsule-select:focus { outline: none; border-color: var(--sf-gold); box-shadow: 0 0 0 2px rgba(232, 193, 90, 0.15); }
+.timecapsule-form { display: flex; flex-direction: column; gap: 12px; margin: 12px 0; padding: 16px; border: 1px solid var(--color-border, var(--ui-border)); border-radius: var(--radius, var(--ui-radius)); }
+.timecapsule-draft { width: 100%; padding: 8px; border: 1px solid var(--color-border, var(--ui-border)); border-radius: var(--radius, var(--ui-radius)); background: transparent; color: inherit; font: inherit; resize: vertical; }
+.timecapsule-draft:focus { outline: none; border-color: var(--ui-gold); box-shadow: 0 0 0 2px rgba(232, 193, 90, 0.15); }
+.timecapsule-draft-invalid { border-color: var(--ui-red); }
+.timecapsule-select { padding: 8px; border: 1px solid var(--color-border, var(--ui-border)); border-radius: var(--radius, var(--ui-radius)); background: transparent; color: inherit; font: inherit; }
+.timecapsule-select:focus { outline: none; border-color: var(--ui-gold); box-shadow: 0 0 0 2px rgba(232, 193, 90, 0.15); }
 .timecapsule-log { margin-top: 16px; }
-.timecapsule-log-entry { padding: 6px 0; border-bottom: 1px solid var(--color-border, var(--sf-border)); display: flex; flex-direction: column; gap: 2px; }
-.timecapsule-error { color: var(--color-destructive, var(--sf-red)); margin-bottom: 12px; }
-.timecapsule-notice { color: var(--sf-gold); margin-bottom: 12px; }
-.timecapsule-field-error { color: var(--sf-red); font-size: 0.85rem; margin-top: 4px; }
+.timecapsule-log-entry { padding: 6px 0; border-bottom: 1px solid var(--color-border, var(--ui-border)); display: flex; flex-direction: column; gap: 2px; }
+.timecapsule-error { color: var(--color-destructive, var(--ui-red)); margin-bottom: 12px; }
+.timecapsule-notice { color: var(--ui-gold); margin-bottom: 12px; }
+.timecapsule-field-error { color: var(--ui-red); font-size: 0.85rem; margin-top: 4px; }

@@ -1,14 +1,14 @@
 /* ============================================================================
-   Sunface UI Kit — reusable helpers for Hermes dashboard tabs.
+   UI Kit — reusable helpers for Hermes dashboard tabs.
    Version 1.0.0. Vanilla JS, no framework, no external requests.
-   Defines window.SunfaceKit. Every helper is defensive: it never throws
+   Defines window.UiKit. Every helper is defensive: it never throws
    on bad input, and it never touches the DOM at load time.
 
-   Adoption: copy sunface-kit.js + sunface-kit.css into your plugin's
+   Adoption: copy ui-kit.js + ui-kit.css into your plugin's
    dashboard/dist/. In your dist/index.js, load this file (see the
    plugin's index.js for the loader pattern) and call the helpers with
    local fallbacks — the tab must work if the kit file is not served.
-   See sunface-ui-kit/README.md.
+   See ui-kit/README.md.
    ========================================================================== */
 (function () {
   "use strict";
@@ -161,5 +161,5 @@
     }
   };
 
-  window.SunfaceKit = Kit;
+  window.UiKit = Kit;
 })();
