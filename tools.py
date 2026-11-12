@@ -29,7 +29,11 @@ def _timecapsule():
             from plugins.plugin_storage import plugin_data_dir
             root = str(plugin_data_dir("timecapsule"))
         except Exception:
-            root = str(Path.home() / ".hermes" / "plugin-data" / "timecapsule")
+            try:
+                from hermes_constants import get_hermes_home
+                root = str(get_hermes_home() / "plugin-data" / "timecapsule")
+            except Exception:
+                root = str(Path.home() / ".hermes" / "plugin-data" / "timecapsule")
     return TimeCapsule(root)
 
 

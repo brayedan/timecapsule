@@ -243,12 +243,11 @@
       if (busy) return;
       setBusy(true);
       setError(""); setNotice("");
-      fetch(API + path, {
+      SDK.fetchJSON(API + path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body || {}),
       })
-        .then(function (r) { return r.json(); })
         .then(function (d) { handleActionResult(d, capsuleId, okLine); })
         .catch(function (e) { setBusy(false); setError(String(e && e.message || e)); toast(String(e && e.message || e), "error"); });
     }
@@ -283,12 +282,11 @@
       if (sealCondition === "silence") { payload.silence_days = parseInt(sealSilence, 10) || 7; }
       setBusy(true);
       setError(""); setNotice("");
-      fetch(API + "/seal", {
+      SDK.fetchJSON(API + "/seal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       })
-        .then(function (r) { return r.json(); })
         .then(function (d) {
           setBusy(false);
           if (d.error) { setError(d.error); setNotice(""); toast(d.error, "error"); return; }
