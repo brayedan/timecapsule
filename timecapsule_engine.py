@@ -288,11 +288,11 @@ class TimeCapsule:
 
         with _FileLock(self.root):
             data = self._load()
+            now = self._now()
+            self._refresh(data, now)  # free expired pending-deletion slots before the cap check
             if len(data["capsules"]) >= MAX_CAPSULES:
                 raise CapsuleError(f"store holds the maximum of {MAX_CAPSULES} capsules — "
                                    "open or delete one first")
-            now = self._now()
-            self._refresh(data, now)
             capsule_id = f"cap-{data['next_id']:04d}"
             data["next_id"] += 1
             capsule = {
