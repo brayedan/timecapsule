@@ -496,5 +496,18 @@ class TestStructuredRefusals(unittest.TestCase):
         self.assertEqual(e.details, {"status": "sealed"})
 
 
+class TestDeletionLog(unittest.TestCase):
+    def test_deletion_announcement_carries_new_fields(self):
+        root, clock, tc = _fresh()
+        tc.seal("short-lived", "manual", author="hyperion", delete_days=1)
+        tc.delete_capsule("cap-0001")
+        clock.advance(days=1)
+        st = tc.status()
+        entry = st["deletions"][0]
+        self.assertEqual(entry["condition_type"], "manual")
+        self.assertIs(entry["was_opened"], False)
+        self.assertEqual(entry["pending_deletion_at"], "2026-11-08T12:00:00+00:00")
+
+
 if __name__ == "__main__":
     unittest.main()

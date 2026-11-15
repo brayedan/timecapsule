@@ -332,6 +332,9 @@ class TimeCapsule:
                         "sealed_at": capsule.get("sealed_at", ""),
                         "deleted_at": _dt(now),
                         "reason": "deletion countdown expired",
+                        "pending_deletion_at": capsule.get("pending_deletion_at"),
+                        "was_opened": bool(capsule.get("opened_at")),
+                        "condition_type": capsule.get("condition", {}).get("type"),
                     })
                     changed = True
                     continue  # drop the capsule: it is gone
