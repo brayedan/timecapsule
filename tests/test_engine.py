@@ -4,15 +4,19 @@
 """
 
 import json
+import os
 import pathlib
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from timecapsule_engine import CapsuleError, TimeCapsule
+import timecapsule_engine
+from timecapsule_engine import CapsuleError, TimeCapsule, _FileLock
 
 T0 = datetime(2026, 11, 8, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -287,6 +291,74 @@ class TestStatus(unittest.TestCase):
         self.assertEqual(st["counts"]["open"], 0)
         self.assertEqual(st["total_capsules"], 2)
         self.assertEqual(st["deletions_announced"], 0)
+
+
+class TestBatchFixes(unittest.TestCase):
+    def test_seal_at_cap_with_expired_pending_frees_a_slot(self):
+        root, clock, tc = _fresh()
+        rows = []
+        for i in range(1, 100):
+            rows.append({"id": f"cap-{i:04d}", "label": "", "sealed_by": "",
+                         "sealed_at": "2026-11-08T12:00:00+00:00", "message": "x",
+                         "condition": {"type": "manual"}, "grace_days": 3, "delete_days": 7,
+                         "status": "sealed", "grace_started_at": None, "grace_ends_at": None,
+                         "pending_deletion_at": None, "delete_after": None, "opened_at": None})
+        rows.append({"id": "cap-0100", "label": "", "sealed_by": "",
+                     "sealed_at": "2026-11-08T12:00:00+00:00", "message": "doomed",
+                     "condition": {"type": "manual"}, "grace_days": 3, "delete_days": 7,
+                     "status": "pending-deletion", "grace_started_at": None, "grace_ends_at": None,
+                     "pending_deletion_at": "2026-11-08T12:00:00+00:00",
+                     "delete_after": "2026-11-09T12:00:00+00:00", "opened_at": None})
+        store = {"version": 1, "next_id": 101, "last_activity_at": "2026-11-08T12:00:00+00:00",
+                 "capsules": rows, "deletions": []}
+        (root / "store.json").write_text(json.dumps(store))
+        clock.advance(days=10)  # delete_after long past: refresh must free the slot
+        r = tc.seal("the freed slot", "manual", author="hyperion")
+        self.assertEqual(r["id"], "cap-0101")
+        self.assertEqual(tc.status()["total_capsules"], 100)
+
+    def test_grace_starts_at_first_observation_not_condition_date(self):
+        _, clock, tc = _fresh()
+        tc.seal("late first look", "date", release_date="2026-11-10T00:00:00Z", grace_days=3)
+        # Condition is met only after the seal; the capsule stays sealed until
+        # an operation observes it. grace_started_at must be the observation
+        # time (first refresh), not the condition date.
+        clock.advance(days=5)
+        c = tc.list_capsules()["capsules"][0]
+        self.assertEqual(c["status"], "grace")
+        self.assertEqual(c["grace_started_at"], "2026-11-13T12:00:00+00:00")
+
+    def test_stale_lockfile_is_broken(self):
+        root, _, tc = _fresh()
+        lock = root / ".timecapsule.lock"
+        lock.write_text("99999")
+        old = time.time() - 45
+        os.utime(lock, (old, old))
+        r = tc.seal("after stale lock", "manual", author="hyperion")
+        self.assertEqual(r["id"], "cap-0001")
+
+    def test_corrupt_store_raises_and_bytes_unchanged(self):
+        root, _, tc = _fresh()
+        (root / "store.json").write_text("{not json")
+        with self.assertRaises(CapsuleError) as cm:
+            tc.seal("x", "manual", author="hyperion")
+        self.assertIn("corrupt", str(cm.exception))
+        self.assertEqual((root / "store.json").read_text(), "{not json")
+
+    def test_row_missing_status_raises_capsule_error_not_keyerror(self):
+        root, _, tc = _fresh()
+        store = {"version": 1, "next_id": 2, "last_activity_at": None,
+                 "capsules": [{"id": "cap-0001", "label": "", "sealed_by": "",
+                               "sealed_at": "2026-11-08T12:00:00+00:00", "message": "x",
+                               "condition": {"type": "manual"}, "grace_days": 3, "delete_days": 7,
+                               "grace_started_at": None, "grace_ends_at": None,
+                               "pending_deletion_at": None, "delete_after": None,
+                               "opened_at": None}],  # no "status" key
+                 "deletions": []}
+        (root / "store.json").write_text(json.dumps(store))
+        with self.assertRaises(CapsuleError) as cm:
+            tc.seal("x", "manual", author="hyperion")
+        self.assertIn("unexpected shape", str(cm.exception))
 
 
 if __name__ == "__main__":
