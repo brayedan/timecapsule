@@ -448,5 +448,53 @@ class TestDateParsing(unittest.TestCase):
         self.assertEqual(_parse_dt("9999-12-31T23:59:59Z").year, 9999)
 
 
+class TestStructuredRefusals(unittest.TestCase):
+    def _refusal(self, tc, cid, author=""):
+        try:
+            tc.open_capsule(cid, author)
+            self.fail("expected CapsuleError")
+        except CapsuleError as e:
+            return e
+
+    def test_date_refusal_details(self):
+        _, _, tc = _fresh()
+        tc.seal("x", "date", release_date="2026-11-11T15:00:00Z", grace_days=3)
+        e = self._refusal(tc, "cap-0001")
+        self.assertEqual(e.details["status"], "sealed")
+        self.assertEqual(e.details["eligible_at"], "2026-11-11T15:00:00+00:00")
+        self.assertGreater(e.details["remaining_seconds"], 0)
+
+    def test_silence_refusal_details(self):
+        _, _, tc = _fresh()
+        tc.seal("x", "silence", silence_days=2, grace_days=0)
+        e = self._refusal(tc, "cap-0001")
+        self.assertEqual(e.details["eligible_at"], "2026-11-10T12:00:00+00:00")  # T0 + 2 days
+        self.assertEqual(e.details["remaining_seconds"], 2 * 24 * 3600)
+
+    def test_grace_refusal_details(self):
+        _, _, tc = _fresh()
+        tc.seal("x", "date", release_date="2026-11-01T00:00:00Z", grace_days=3)
+        tc.list_capsules()  # enters grace
+        e = self._refusal(tc, "cap-0001")
+        self.assertEqual(e.details["status"], "grace")
+        self.assertEqual(e.details["eligible_at"], "2026-11-11T12:00:00+00:00")  # T0 + 3 days
+        self.assertGreater(e.details["remaining_seconds"], 0)
+
+    def test_pending_deletion_refusal_details(self):
+        _, _, tc = _fresh()
+        tc.seal("x", "manual", author="hyperion")
+        tc.delete_capsule("cap-0001")
+        e = self._refusal(tc, "cap-0001")
+        self.assertEqual(e.details["status"], "pending-deletion")
+        self.assertEqual(e.details["eligible_at"], "2026-11-15T12:00:00+00:00")  # T0 + 7 days
+        self.assertGreater(e.details["remaining_seconds"], 0)
+
+    def test_manual_wrong_author_refusal_has_no_timing(self):
+        _, _, tc = _fresh()
+        tc.seal("x", "manual", author="hyperion", grace_days=0)
+        e = self._refusal(tc, "cap-0001", author="decomp")
+        self.assertEqual(e.details, {"status": "sealed"})
+
+
 if __name__ == "__main__":
     unittest.main()

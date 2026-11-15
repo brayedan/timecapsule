@@ -56,7 +56,9 @@ def utcnow_iso():
 
 
 class CapsuleError(Exception):
-    pass
+    def __init__(self, message, details=None):
+        super().__init__(message)
+        self.details = details or {}
 
 
 def _parse_dt(value):
@@ -417,6 +419,20 @@ class TimeCapsule:
             capsules = [c for c in capsules if c["status"] == status_filter]
         return {"capsules": capsules, "count": len(capsules)}
 
+    def _refuse(self, message, capsule, now, eligible_at=None):
+        """Raise an honest refusal whose details are machine-readable.
+
+        details carries the capsule status; when a concrete time is
+        known (grace end, condition date, deletion bound), it carries
+        eligible_at + remaining_seconds. Never fabricate a time: a
+        wrong-author manual refusal has no eligibility.
+        """
+        details = {"status": capsule["status"]}
+        if eligible_at is not None:
+            details["eligible_at"] = _dt(eligible_at)
+            details["remaining_seconds"] = max(0, int((eligible_at - now).total_seconds()))
+        raise CapsuleError(message, details=details)
+
     def open_capsule(self, capsule_id, author=""):
         with _FileLock(self.root):
             data = self._load()
@@ -427,9 +443,11 @@ class TimeCapsule:
             status = capsule["status"]
             if status == "pending-deletion":
                 self._save(data)
-                raise CapsuleError(
+                self._refuse(
                     f"{capsule_id} is pending deletion (gone {capsule['delete_after']}) — "
-                    "restore it first if you want it back")
+                    "restore it first if you want it back",
+                    capsule, now,
+                    eligible_at=_parse_dt(capsule["delete_after"]) if capsule.get("delete_after") else None)
             if status == "open":
                 capsule["opened_at"] = capsule.get("opened_at") or _dt(now)
                 self._save(data)
@@ -437,18 +455,21 @@ class TimeCapsule:
                         "content": capsule["message"], "opened_at": capsule["opened_at"]}
             if status == "grace":
                 self._save(data)
-                raise CapsuleError(
+                self._refuse(
                     f"{capsule_id} is in grace until {capsule['grace_ends_at']} — "
-                    "the sealer can re-seal it, or wait for the grace to end")
+                    "the sealer can re-seal it, or wait for the grace to end",
+                    capsule, now,
+                    eligible_at=_parse_dt(capsule["grace_ends_at"]) if capsule.get("grace_ends_at") else None)
             # sealed
             cond = capsule["condition"]
             if cond["type"] == "manual":
                 sealed_by = capsule.get("sealed_by", "")
                 if sealed_by and (author or "").strip() != sealed_by:
                     self._save(data)
-                    raise CapsuleError(
+                    self._refuse(
                         f"{capsule_id} is manual-release and was sealed by {sealed_by} — "
-                        "only the sealer can release it")
+                        "only the sealer can release it",
+                        capsule, now)
                 capsule["status"] = "grace"
                 capsule["grace_started_at"] = _dt(now)
                 capsule["grace_ends_at"] = _dt(now + timedelta(days=capsule.get("grace_days", 3)))
@@ -459,20 +480,30 @@ class TimeCapsule:
                     return {"ok": True, "id": capsule_id, "label": capsule.get("label", ""),
                             "content": capsule["message"], "opened_at": capsule["opened_at"]}
                 self._save(data)
-                raise CapsuleError(
+                self._refuse(
                     f"{capsule_id} released into grace until {capsule['grace_ends_at']} — "
-                    "call open again after the grace ends")
+                    "call open again after the grace ends",
+                    capsule, now,
+                    eligible_at=_parse_dt(capsule["grace_ends_at"]) if capsule.get("grace_ends_at") else None)
             if cond["type"] == "date":
                 self._save(data)
-                raise CapsuleError(
+                self._refuse(
                     f"{capsule_id} is sealed until {cond['date']} — "
-                    "the date has not arrived yet")
+                    "the date has not arrived yet",
+                    capsule, now, eligible_at=_parse_dt(cond["date"]))
             # silence, not yet met
             last = data.get("last_activity_at")
             self._save(data)
-            raise CapsuleError(
+            eligible = None
+            if last:
+                try:
+                    eligible = _parse_dt(last) + timedelta(days=cond["days"])
+                except CapsuleError:
+                    eligible = None
+            self._refuse(
                 f"{capsule_id} is sealed until {cond['days']} days of silence — "
-                f"last activity was {last or 'never'}")
+                f"last activity was {last or 'never'}",
+                capsule, now, eligible_at=eligible)
 
     def delete_capsule(self, capsule_id, delete_days=None):
         with _FileLock(self.root):
