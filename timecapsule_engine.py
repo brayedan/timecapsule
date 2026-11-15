@@ -44,6 +44,8 @@ SILENCE_DAYS_MIN = 1
 SILENCE_DAYS_MAX = 365
 LOCK_TIMEOUT_S = 10
 LOCK_STALE_S = 30
+CLOCK_ROLLBACK_TOLERANCE_S = 300   # 5 minutes
+CLOCK_ROLLBACK_LOG_MAX = 10
 
 CONDITION_TYPES = ("date", "silence", "manual")
 STATUSES = ("sealed", "grace", "open", "pending-deletion")
@@ -231,6 +233,7 @@ class TimeCapsule:
     def _load(self):
         if not self._store_path.exists():
             return {"version": 1, "next_id": 1, "last_activity_at": None,
+                    "clock_high_water": None, "clock_rollbacks": [],
                     "capsules": [], "deletions": []}
         try:
             data = json.loads(self._store_path.read_text(encoding="utf-8"))
@@ -297,6 +300,38 @@ class TimeCapsule:
                 return False
             return (now - _parse_dt(last_activity)) >= timedelta(days=cond["days"])
         return False  # manual: only an explicit open by the sealer releases
+
+    def _clock_watch(self, data, now):
+        """Warn-and-record clock rollback detection — never refuses.
+
+        The high-water mark is the latest now observed while writing. A
+        now earlier than the high-water mark by more than
+        CLOCK_ROLLBACK_TOLERANCE_S (dual-boot skew, VM suspend/resume)
+        is logged, one entry per episode, and surfaced by status(); the
+        store is never refused or bricked in 0.1.x (hard guard + escape
+        hatch is a 0.2.0 item). Returns True when the caller should save.
+        """
+        changed = False
+        high = data.get("clock_high_water")
+        if high is not None:
+            try:
+                hw = _parse_dt(high)
+            except CapsuleError:
+                hw = None
+            if hw is not None:
+                delta = (now - hw).total_seconds()
+                if delta < -CLOCK_ROLLBACK_TOLERANCE_S:
+                    log = data.setdefault("clock_rollbacks", [])
+                    if not log or log[-1].get("high_water") != high:
+                        log.append({"detected_at": _dt(now), "now": _dt(now),
+                                    "high_water": high, "delta_s": int(delta)})
+                        del log[:-CLOCK_ROLLBACK_LOG_MAX]  # keep the newest N
+                        changed = True
+        now_iso = _dt(now)
+        if high is None or now_iso > high:
+            data["clock_high_water"] = now_iso
+            changed = True
+        return changed
 
     def _refresh(self, data, now):
         """Advance statuses lazily. Returns True if anything changed.
@@ -381,6 +416,7 @@ class TimeCapsule:
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
+            self._clock_watch(data, now)
             self._refresh(data, now)  # free expired pending-deletion slots before the cap check
             if len(data["capsules"]) >= MAX_CAPSULES:
                 raise CapsuleError(f"store holds the maximum of {MAX_CAPSULES} capsules — "
@@ -412,7 +448,7 @@ class TimeCapsule:
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
-            changed = self._refresh(data, now)
+            changed = self._refresh(data, now) or self._clock_watch(data, now)
             if changed:
                 self._save(data)
         capsules = [_public(c) for c in data["capsules"]]
@@ -440,6 +476,7 @@ class TimeCapsule:
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
+            self._clock_watch(data, now)
             self._refresh(data, now)
             capsule = self._find(data, capsule_id)
             self._touch(data, now)
@@ -512,6 +549,7 @@ class TimeCapsule:
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
+            self._clock_watch(data, now)
             self._refresh(data, now)
             capsule = self._find(data, capsule_id)
             if capsule["status"] == "pending-deletion":
@@ -537,6 +575,7 @@ class TimeCapsule:
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
+            self._clock_watch(data, now)
             self._refresh(data, now)
             capsule = self._find(data, capsule_id)
             if capsule["status"] != "pending-deletion":
@@ -553,6 +592,7 @@ class TimeCapsule:
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
+            self._clock_watch(data, now)
             self._refresh(data, now)
             capsule = self._find(data, capsule_id)
             if capsule["status"] != "grace":
@@ -574,7 +614,7 @@ class TimeCapsule:
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
-            changed = self._refresh(data, now)
+            changed = self._refresh(data, now) or self._clock_watch(data, now)
             if changed:
                 self._save(data)
         counts = {s: 0 for s in STATUSES}
@@ -586,5 +626,10 @@ class TimeCapsule:
             "deletions_announced": len(data["deletions"]),
             "deletions": data["deletions"],
             "last_activity_at": data.get("last_activity_at"),
+            "clock": {
+                "high_water": data.get("clock_high_water"),
+                "rollbacks_detected": len(data.get("clock_rollbacks", [])),
+                "last_rollback": (data.get("clock_rollbacks") or [None])[-1],
+            },
             "store": str(self._store_path),
         }

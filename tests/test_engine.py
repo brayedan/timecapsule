@@ -509,5 +509,55 @@ class TestDeletionLog(unittest.TestCase):
         self.assertEqual(entry["pending_deletion_at"], "2026-11-08T12:00:00+00:00")
 
 
+class TestClockRollback(unittest.TestCase):
+    def _clock(self, tc):
+        return tc.status()["clock"]
+
+    def test_rollback_over_tolerance_recorded(self):
+        root, clock, tc = _fresh()
+        tc.seal("a", "manual", author="hyperion")   # high-water = T0, saved
+        clock.advance(days=-1)
+        ck = self._clock(tc)
+        self.assertEqual(ck["rollbacks_detected"], 1)
+        self.assertEqual(ck["last_rollback"]["delta_s"], -86400)
+        self.assertEqual(ck["high_water"], "2026-11-08T12:00:00+00:00")
+        # recorded on disk, not only in memory
+        store = json.loads((root / "store.json").read_text())
+        self.assertEqual(len(store["clock_rollbacks"]), 1)
+
+    def test_rollback_under_tolerance_ignored(self):
+        _, clock, tc = _fresh()
+        tc.seal("a", "manual", author="hyperion")
+        clock.advance(minutes=-1)
+        ck = self._clock(tc)
+        self.assertEqual(ck["rollbacks_detected"], 0)
+
+    def test_same_episode_not_duplicated(self):
+        _, clock, tc = _fresh()
+        tc.seal("a", "manual", author="hyperion")
+        clock.advance(days=-1)
+        self.assertEqual(self._clock(tc)["rollbacks_detected"], 1)
+        self.assertEqual(self._clock(tc)["rollbacks_detected"], 1)
+
+    def test_log_caps_at_10_keeps_newest(self):
+        _, clock, tc = _fresh()
+        tc.seal("a", "manual", author="hyperion")
+        for _ in range(1, 12):
+            clock.advance(days=-1, hours=-6)   # back before the high-water: record an episode
+            tc.status()
+            clock.advance(hours=36)            # forward past it, and persist the high-water
+            tc.status()
+        ck = self._clock(tc)
+        self.assertEqual(ck["rollbacks_detected"], 10)
+        self.assertEqual(ck["last_rollback"]["high_water"], "2026-11-11T00:00:00+00:00")
+
+    def test_rollback_never_refuses(self):
+        _, clock, tc = _fresh()
+        tc.seal("a", "manual", author="hyperion")
+        clock.advance(days=-2)
+        r = tc.seal("b", "manual", author="hyperion")
+        self.assertTrue(r["sealed"])
+
+
 if __name__ == "__main__":
     unittest.main()
