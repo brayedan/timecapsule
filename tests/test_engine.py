@@ -418,5 +418,24 @@ class TestAtomicWrite(unittest.TestCase):
         self.assertEqual(list(root.glob("*.tmp")), [])
 
 
+class TestIntArg(unittest.TestCase):
+    def test_strict_coercion(self):
+        from timecapsule_engine import _int_arg
+        with self.assertRaises(CapsuleError):
+            _int_arg("grace_days", True, 0, 30)
+        with self.assertRaises(CapsuleError):
+            _int_arg("grace_days", 3.9, 0, 30)
+        with self.assertRaises(CapsuleError):
+            _int_arg("grace_days", float("nan"), 0, 30)
+        with self.assertRaises(CapsuleError):
+            _int_arg("grace_days", float("inf"), 0, 30)
+        self.assertEqual(_int_arg("grace_days", 3.0, 0, 30), 3)
+        self.assertEqual(_int_arg("grace_days", "3", 0, 30), 3)
+        with self.assertRaises(CapsuleError):
+            _int_arg("grace_days", 31, 0, 30)
+        with self.assertRaises(CapsuleError):
+            _int_arg("grace_days", None, 0, 30)
+
+
 if __name__ == "__main__":
     unittest.main()

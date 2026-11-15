@@ -75,6 +75,26 @@ def _dt(dt):
     return dt.isoformat(timespec="seconds")
 
 
+def _int_arg(name, value, lo, hi):
+    """Strict integer coercion for tool arguments.
+
+    Rejects bool and non-integral floats (e.g. True, 3.9, nan, inf);
+    int()-coerces everything else (3.0 -> 3, "3" -> 3) and enforces the
+    range. Raises CapsuleError naming the field.
+    """
+    if isinstance(value, bool):
+        raise CapsuleError(f"{name} must be an integer, not a boolean")
+    if isinstance(value, float) and not value.is_integer():
+        raise CapsuleError(f"{name} must be an integer, got {value!r}")
+    try:
+        n = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise CapsuleError(f"{name} must be an integer, got {value!r}")
+    if not lo <= n <= hi:
+        raise CapsuleError(f"{name} must be {lo}..{hi}, got {n}")
+    return n
+
+
 class CapsuleError(Exception):
     pass
 
@@ -336,18 +356,8 @@ class TimeCapsule:
             raise CapsuleError(f"release_condition must be one of {CONDITION_TYPES}")
         if label and len(label) > LABEL_MAX:
             raise CapsuleError(f"label exceeds {LABEL_MAX} characters")
-        try:
-            grace_days = int(grace_days)
-        except (TypeError, ValueError):
-            raise CapsuleError("grace_days must be an integer")
-        if not 0 <= grace_days <= GRACE_DAYS_MAX:
-            raise CapsuleError(f"grace_days must be 0..{GRACE_DAYS_MAX}")
-        try:
-            delete_days = int(delete_days)
-        except (TypeError, ValueError):
-            raise CapsuleError("delete_days must be an integer")
-        if not DELETE_DAYS_MIN <= delete_days <= DELETE_DAYS_MAX:
-            raise CapsuleError(f"delete_days must be {DELETE_DAYS_MIN}..{DELETE_DAYS_MAX}")
+        grace_days = _int_arg("grace_days", grace_days, 0, GRACE_DAYS_MAX)
+        delete_days = _int_arg("delete_days", delete_days, DELETE_DAYS_MIN, DELETE_DAYS_MAX)
 
         condition = {"type": condition_type}
         if condition_type == "date":
@@ -357,12 +367,7 @@ class TimeCapsule:
         elif condition_type == "silence":
             if silence_days is None:
                 raise CapsuleError("release_condition 'silence' needs silence_days")
-            try:
-                silence_days = int(silence_days)
-            except (TypeError, ValueError):
-                raise CapsuleError("silence_days must be an integer")
-            if not SILENCE_DAYS_MIN <= silence_days <= SILENCE_DAYS_MAX:
-                raise CapsuleError(f"silence_days must be {SILENCE_DAYS_MIN}..{SILENCE_DAYS_MAX}")
+            silence_days = _int_arg("silence_days", silence_days, SILENCE_DAYS_MIN, SILENCE_DAYS_MAX)
             condition["days"] = silence_days
 
         with _FileLock(self.root):
@@ -477,12 +482,7 @@ class TimeCapsule:
                         "delete_after": capsule["delete_after"],
                         "note": "already pending deletion"}
             if delete_days is not None:
-                try:
-                    delete_days = int(delete_days)
-                except (TypeError, ValueError):
-                    raise CapsuleError("delete_days must be an integer")
-                if not DELETE_DAYS_MIN <= delete_days <= DELETE_DAYS_MAX:
-                    raise CapsuleError(f"delete_days must be {DELETE_DAYS_MIN}..{DELETE_DAYS_MAX}")
+                delete_days = _int_arg("delete_days", delete_days, DELETE_DAYS_MIN, DELETE_DAYS_MAX)
             else:
                 delete_days = capsule.get("delete_days", 7)
             capsule["status"] = "pending-deletion"
