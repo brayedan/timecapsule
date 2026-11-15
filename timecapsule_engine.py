@@ -608,7 +608,8 @@ class TimeCapsule:
             self._touch(data, now)
             self._save(data)
         return {"ok": True, "id": capsule_id, "status": "sealed",
-                "note": "re-sealed — the release condition applies again from now"}
+                "note": "re-sealed — the release condition still applies; a date "
+                        "capsule past its date re-enters grace on the next observation"}
 
     def status(self):
         with _FileLock(self.root):
