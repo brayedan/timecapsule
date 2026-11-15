@@ -437,5 +437,16 @@ class TestIntArg(unittest.TestCase):
             _int_arg("grace_days", None, 0, 30)
 
 
+class TestDateParsing(unittest.TestCase):
+    def test_parse_edge_cases(self):
+        from timecapsule_engine import _parse_dt
+        self.assertEqual(_parse_dt("2026-11-11T15:00:00.5Z").isoformat(),
+                         "2026-11-11T15:00:00.500000+00:00")
+        dt = _parse_dt("2026-11-11T15:00:00+05:30")
+        self.assertEqual(dt.isoformat(), "2026-11-11T09:30:00+00:00")
+        self.assertEqual(_parse_dt("2026-11-11").isoformat(), "2026-11-11T00:00:00+00:00")
+        self.assertEqual(_parse_dt("9999-12-31T23:59:59Z").year, 9999)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -55,6 +55,10 @@ def utcnow_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+class CapsuleError(Exception):
+    pass
+
+
 def _parse_dt(value):
     """Parse an ISO 8601 date or datetime into an aware UTC datetime."""
     if not isinstance(value, str) or not value.strip():
@@ -62,9 +66,12 @@ def _parse_dt(value):
     text = value.strip()
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
+    # fromisoformat before 3.11 needs fractional seconds padded to exactly
+    # 3 or 6 digits; normalize so the documented formats work everywhere.
+    text = re.sub(r"\.(\d+)", lambda m: "." + m.group(1)[:6].ljust(6, "0"), text, count=1)
     try:
         dt = datetime.fromisoformat(text)
-    except ValueError:
+    except (ValueError, OverflowError):
         raise CapsuleError(f"unparseable date: {value!r} (use ISO 8601, e.g. 2026-11-11T15:00:00Z)")
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -93,10 +100,6 @@ def _int_arg(name, value, lo, hi):
     if not lo <= n <= hi:
         raise CapsuleError(f"{name} must be {lo}..{hi}, got {n}")
     return n
-
-
-class CapsuleError(Exception):
-    pass
 
 
 class _FileLock:
