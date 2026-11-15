@@ -361,5 +361,62 @@ class TestBatchFixes(unittest.TestCase):
         self.assertIn("unexpected shape", str(cm.exception))
 
 
+class TestFileLock(unittest.TestCase):
+    def test_lock_exit_keeps_foreign_token_lockfile(self):
+        root, _, _ = _fresh()
+        a = _FileLock(root)
+        b = _FileLock(root)
+        a.__enter__()
+        a.__exit__(None, None, None)           # released cleanly
+        b.__enter__()                          # b owns the lockfile now (token_b)
+        a._token = "stale-a-token"
+        a.__exit__(None, None, None)           # stale holder releases: must NOT delete b's lock
+        self.assertTrue((root / ".timecapsule.lock").exists())
+        b.__exit__(None, None, None)
+        self.assertFalse((root / ".timecapsule.lock").exists())
+
+    def test_lock_acquire_permission_error_times_out_not_hangs(self):
+        root, _, tc = _fresh()
+        old = timecapsule_engine.LOCK_TIMEOUT_S
+        timecapsule_engine.LOCK_TIMEOUT_S = 0.2
+        try:
+            with mock.patch("timecapsule_engine.os.open", side_effect=PermissionError("denied")):
+                start = time.time()
+                with self.assertRaises(CapsuleError):
+                    tc.seal("x", "manual", author="hyperion")
+                self.assertLess(time.time() - start, 5)
+        finally:
+            timecapsule_engine.LOCK_TIMEOUT_S = old
+
+
+class TestAtomicWrite(unittest.TestCase):
+    def test_replace_retries_then_succeeds(self):
+        root, _, _ = _fresh()
+        target = root / "store.json"
+        real_replace = timecapsule_engine.os.replace
+        calls = {"n": 0}
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise PermissionError("busy")
+            real_replace(src, dst)
+
+        with mock.patch("timecapsule_engine.os.replace", side_effect=flaky):
+            timecapsule_engine._atomic_write(target, "hello")
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(target.read_text(), "hello")
+        self.assertEqual(list(root.glob("*.tmp")), [])
+
+    def test_replace_five_failures_reraises_and_cleans_tmp(self):
+        root, _, _ = _fresh()
+        target = root / "store.json"
+        with mock.patch("timecapsule_engine.os.replace", side_effect=PermissionError("busy")):
+            with self.assertRaises(PermissionError):
+                timecapsule_engine._atomic_write(target, "hello")
+        self.assertFalse(target.exists())
+        self.assertEqual(list(root.glob("*.tmp")), [])
+
+
 if __name__ == "__main__":
     unittest.main()
