@@ -42,6 +42,8 @@ DELETE_DAYS_MIN = 1
 DELETE_DAYS_MAX = 30
 SILENCE_DAYS_MIN = 1
 SILENCE_DAYS_MAX = 365
+LOCK_TIMEOUT_S = 10
+LOCK_STALE_S = 30
 
 CONDITION_TYPES = ("date", "silence", "manual")
 STATUSES = ("sealed", "grace", "open", "pending-deletion")
@@ -90,19 +92,28 @@ class _FileLock:
         self._path = Path(root) / ".timecapsule.lock"
 
     def __enter__(self):
-        deadline = time.time() + 10
+        self._token = uuid.uuid4().hex
+        deadline = time.time() + LOCK_TIMEOUT_S
         while True:
             try:
-                fd = os.open(str(self._path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, str(os.getpid()).encode())
+                fd = os.open(str(self._path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.write(fd, self._token.encode())
                 os.close(fd)
                 return self
-            except FileExistsError:
+            except (FileExistsError, PermissionError):
+                # PermissionError: on Windows the releasing writer's unlink can
+                # still be in flight when the next creator probes the path.
                 try:
                     age = time.time() - self._path.stat().st_mtime
                 except FileNotFoundError:
+                    # Lockfile does not exist (e.g. create denied by ACLs):
+                    # respect the deadline instead of spinning forever.
+                    if time.time() > deadline:
+                        raise CapsuleError("timecapsule store could not be locked "
+                                           "(permission denied creating the lockfile?)")
+                    time.sleep(0.05)
                     continue
-                if age > 30:
+                if age > LOCK_STALE_S:
                     try:
                         self._path.unlink()
                     except FileNotFoundError:
@@ -114,9 +125,14 @@ class _FileLock:
 
     def __exit__(self, *exc):
         try:
-            self._path.unlink()
-        except FileNotFoundError:
-            pass
+            contents = self._path.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            return False  # already gone, or unreadable — stale-break handles it
+        if contents == self._token:
+            try:
+                self._path.unlink()
+            except FileNotFoundError:
+                pass
         return False
 
 
