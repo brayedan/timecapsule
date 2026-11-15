@@ -31,7 +31,10 @@ an instant) and announced (a permanent record, not a silent wipe).
   (dead-man's-switch flavour). Activity = seal, open, delete, restore,
   reseal. Listing and status are read-only and do not reset the clock.
   A refused open attempt *is* activity — checking on a silent capsule
-  proves you are still there.
+  proves you are still there. The silence clock is store-wide: sealing
+  any capsule resets the clock for every silence capsule. The store's
+  clock high-water mark is recorded with each write; a backward clock
+  jump is logged and visible in `timecapsule_status`, never fatal.
 - **manual** — only the sealer can release it, by calling open. Seal
   with an `author` if you want this gate to mean something; a capsule
   sealed with no author can be released by anyone who calls open.
@@ -39,9 +42,12 @@ an instant) and announced (a permanent record, not a silent wipe).
 ## The grace ladder
 
 When a release condition is met, the capsule enters **grace** for
-`grace_days`. During grace the sealer can re-seal it (back to sealed)
-or delete it. After grace it becomes **open**. `grace_days=0` opens
-immediately once the condition is met.
+`grace_days`. Grace starts at the first operation that observes the
+condition met, not at the condition time itself. During grace the
+sealer can re-seal it (back to sealed) or delete it. After grace it
+becomes **open**. `grace_days=0` opens immediately once the
+condition is met. Re-sealing a date capsule whose date has already
+passed restarts its grace window on the next observation.
 
 ## Deletion is slow and announced
 
@@ -50,7 +56,9 @@ pending-deletion for `delete_days`. During the countdown it can be
 restored. When the countdown ends, the capsule is removed and a
 permanent entry is written to the deletion log
 (`deletions[]` in `store.json`), visible in `timecapsule_status`.
-Deleted ids are never reused.
+Each announcement records the sealer, the sealed date, when the
+deletion countdown started, whether the capsule was ever opened, and
+its release condition. Deleted ids are never reused.
 
 ## What the seal is — and is not
 
@@ -89,9 +97,12 @@ grace 0–30 days, deletion countdown 1–30 days, silence 1–365 days.
 python -m unittest discover -s tests -v
 ```
 
-20 tests, stdlib `unittest` (no pytest — keeps the stdlib-only
+42 tests, stdlib `unittest` (no pytest — keeps the stdlib-only
 doctrine). A fake clock drives the time-dependent behaviour, so the
-suite runs in milliseconds instead of days.
+suite runs in milliseconds instead of days. Python 3.9+;
+`datetime.fromisoformat` accepts more ISO forms on 3.11+, but the
+documented formats (date-only, `Z`, `+HH:MM`, fractional seconds) are
+normalized so they work on every supported version — CI runs 3.9–3.13.
 
 ## Demo
 
@@ -124,7 +135,7 @@ this on its face. The content sits in plaintext in `store.json`; the
 tab enforces who can read it and when, the same as the tools. See
 `SECURITY.md`.
 
-## Known gaps (v0.1.0)
+## Known gaps (v0.1.1)
 
 - **No encryption.** See "What the seal is" above. A crypto-sealed
   v0.2.0 (per-capsule key, sealed blob) is a real follow-up, not a

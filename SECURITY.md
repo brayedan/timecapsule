@@ -156,12 +156,43 @@ second mechanism. What was checked:
   Nothing in it reaches outside the store root, but that is a property
   of this code, not a sandbox guarantee. Do not install untrusted
   forks of it.
+- **`author` is a self-asserted string, not authentication.** It gates
+  manual release and reseal against callers who send the same string;
+  it is not proof of identity.
+- **The system clock is trusted for release timing.** A detected
+  backward clock jump (> 5 minutes, e.g. dual-boot skew, VM
+  suspend/resume) is recorded in the store and surfaced by
+  `timecapsule_status`; in 0.1.x it is never fatal. The hard guard
+  (refuse + escape hatch) is a 0.2.0 item.
+- **Delete removes a capsule from the store but is not a secure wipe.**
+  Old file blocks, backups, and temp files may retain content.
+- **Labels are not secret.** They appear in `list` and persist forever
+  in the deletion log.
+- **"Activity" means any mutating tool call, not proof of human
+  presence.** An agent that polls `timecapsule_open` holds a silence
+  capsule shut — use `list`/`status` to check.
+- **Anyone who can call the tools can start a deletion.** There is no
+  author gate on `delete`/`restore`; the restore window and the
+  permanent announcement are the protection.
 
 ## Test evidence (2026-11-08, local run)
 
 ```
 Ran 20 tests in 0.018s — OK
 ```
+
+## Test evidence (2026-11-15, 0.1.1 batch)
+
+```
+Ran 42 tests in 1.5s — OK
+```
+
+Covering additionally: the cap-check ordering fix, grace-starts-at-
+observation, stale-lock breaking, corrupt-store byte-preservation,
+missing-field row validation, lock token ownership, lock-acquire
+timeout, atomic-write retry + tmp cleanup, strict integer coercion,
+date-parsing edge cases, structured-refusal details, richer deletion
+announcements, and clock-rollback recording.
 
 Covering: seal/list never show content, open-before-date refuses,
 open-after-date works, the grace ladder (grace -> reseal by the wrong

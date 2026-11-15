@@ -42,6 +42,10 @@ DELETE_DAYS_MIN = 1
 DELETE_DAYS_MAX = 30
 SILENCE_DAYS_MIN = 1
 SILENCE_DAYS_MAX = 365
+LOCK_TIMEOUT_S = 10
+LOCK_STALE_S = 30
+CLOCK_ROLLBACK_TOLERANCE_S = 300   # 5 minutes
+CLOCK_ROLLBACK_LOG_MAX = 10
 
 CONDITION_TYPES = ("date", "silence", "manual")
 STATUSES = ("sealed", "grace", "open", "pending-deletion")
@@ -53,6 +57,12 @@ def utcnow_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+class CapsuleError(Exception):
+    def __init__(self, message, details=None):
+        super().__init__(message)
+        self.details = details or {}
+
+
 def _parse_dt(value):
     """Parse an ISO 8601 date or datetime into an aware UTC datetime."""
     if not isinstance(value, str) or not value.strip():
@@ -60,9 +70,12 @@ def _parse_dt(value):
     text = value.strip()
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
+    # fromisoformat before 3.11 needs fractional seconds padded to exactly
+    # 3 or 6 digits; normalize so the documented formats work everywhere.
+    text = re.sub(r"\.(\d+)", lambda m: "." + m.group(1)[:6].ljust(6, "0"), text, count=1)
     try:
         dt = datetime.fromisoformat(text)
-    except ValueError:
+    except (ValueError, OverflowError):
         raise CapsuleError(f"unparseable date: {value!r} (use ISO 8601, e.g. 2026-11-11T15:00:00Z)")
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -73,8 +86,24 @@ def _dt(dt):
     return dt.isoformat(timespec="seconds")
 
 
-class CapsuleError(Exception):
-    pass
+def _int_arg(name, value, lo, hi):
+    """Strict integer coercion for tool arguments.
+
+    Rejects bool and non-integral floats (e.g. True, 3.9, nan, inf);
+    int()-coerces everything else (3.0 -> 3, "3" -> 3) and enforces the
+    range. Raises CapsuleError naming the field.
+    """
+    if isinstance(value, bool):
+        raise CapsuleError(f"{name} must be an integer, not a boolean")
+    if isinstance(value, float) and not value.is_integer():
+        raise CapsuleError(f"{name} must be an integer, got {value!r}")
+    try:
+        n = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise CapsuleError(f"{name} must be an integer, got {value!r}")
+    if not lo <= n <= hi:
+        raise CapsuleError(f"{name} must be {lo}..{hi}, got {n}")
+    return n
 
 
 class _FileLock:
@@ -90,19 +119,28 @@ class _FileLock:
         self._path = Path(root) / ".timecapsule.lock"
 
     def __enter__(self):
-        deadline = time.time() + 10
+        self._token = uuid.uuid4().hex
+        deadline = time.time() + LOCK_TIMEOUT_S
         while True:
             try:
-                fd = os.open(str(self._path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, str(os.getpid()).encode())
+                fd = os.open(str(self._path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.write(fd, self._token.encode())
                 os.close(fd)
                 return self
-            except FileExistsError:
+            except (FileExistsError, PermissionError):
+                # PermissionError: on Windows the releasing writer's unlink can
+                # still be in flight when the next creator probes the path.
                 try:
                     age = time.time() - self._path.stat().st_mtime
                 except FileNotFoundError:
+                    # Lockfile does not exist (e.g. create denied by ACLs):
+                    # respect the deadline instead of spinning forever.
+                    if time.time() > deadline:
+                        raise CapsuleError("timecapsule store could not be locked "
+                                           "(permission denied creating the lockfile?)")
+                    time.sleep(0.05)
                     continue
-                if age > 30:
+                if age > LOCK_STALE_S:
                     try:
                         self._path.unlink()
                     except FileNotFoundError:
@@ -114,18 +152,47 @@ class _FileLock:
 
     def __exit__(self, *exc):
         try:
-            self._path.unlink()
-        except FileNotFoundError:
-            pass
+            contents = self._path.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            return False  # already gone, or unreadable — stale-break handles it
+        if contents == self._token:
+            try:
+                self._path.unlink()
+            except FileNotFoundError:
+                pass
         return False
 
 
 def _atomic_write(path, text):
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        # Windows: the destination may be held open (e.g. the dashboard
+        # reading it) — retry the rename briefly before giving up.
+        last_exc = None
+        for _ in range(5):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError as e:
+                last_exc = e
+                time.sleep(0.05)
+        else:
+            if last_exc is None:  # pragma: no cover — all attempts raise, so it is set
+                raise RuntimeError("atomic write failed without an exception")
+            raise last_exc
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _check_id(capsule_id):
@@ -166,18 +233,58 @@ class TimeCapsule:
     def _load(self):
         if not self._store_path.exists():
             return {"version": 1, "next_id": 1, "last_activity_at": None,
+                    "clock_high_water": None, "clock_rollbacks": [],
                     "capsules": [], "deletions": []}
         try:
             data = json.loads(self._store_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError:
             raise CapsuleError("store.json is corrupt — refusing to touch it "
                                "(back it up, fix or delete it by hand)")
+        except OSError as e:
+            raise CapsuleError(f"store.json could not be read: {e} — refusing to touch it")
         if not isinstance(data, dict) or "capsules" not in data:
             raise CapsuleError("store.json has an unexpected shape — refusing to touch it")
+        if not isinstance(data.get("next_id"), int):
+            raise CapsuleError("store.json has an unexpected shape — refusing to touch it")
+        if not isinstance(data["capsules"], list) or not all(
+                self._valid_row(c) for c in data["capsules"]):
+            raise CapsuleError("store.json has an unexpected shape — refusing to touch it")
         data.setdefault("deletions", [])
-        data.setdefault("next_id", 1)
         data.setdefault("last_activity_at", None)
         return data
+
+    @staticmethod
+    def _valid_row(c):
+        """Shape + scalar-type validation for a capsules[] row.
+
+        Wrong shape is treated as corruption: refuse cleanly, never crash
+        a caller with KeyError/TypeError, never touch the file.
+        """
+        if not isinstance(c, dict):
+            return False
+        if not _ID_RE.fullmatch(str(c.get("id", ""))):
+            return False
+        if not isinstance(c.get("message"), str):
+            return False
+        if c.get("status") not in STATUSES:
+            return False
+        cond = c.get("condition")
+        if not isinstance(cond, dict) or cond.get("type") not in CONDITION_TYPES:
+            return False
+        if cond.get("type") == "date" and not isinstance(cond.get("date"), str):
+            return False
+        if cond.get("type") == "silence" and not isinstance(cond.get("days"), int):
+            return False
+        for field in ("grace_days", "delete_days"):
+            v = c.get(field)
+            if v is not None and not isinstance(v, int):
+                return False
+        for field in ("sealed_at", "grace_started_at", "grace_ends_at",
+                      "pending_deletion_at", "delete_after", "opened_at"):
+            v = c.get(field)
+            if v is not None and not isinstance(v, str):
+                return False
+        return True
 
     def _save(self, data):
         _atomic_write(self._store_path, json.dumps(data, indent=2))
@@ -193,6 +300,38 @@ class TimeCapsule:
                 return False
             return (now - _parse_dt(last_activity)) >= timedelta(days=cond["days"])
         return False  # manual: only an explicit open by the sealer releases
+
+    def _clock_watch(self, data, now):
+        """Warn-and-record clock rollback detection — never refuses.
+
+        The high-water mark is the latest now observed while writing. A
+        now earlier than the high-water mark by more than
+        CLOCK_ROLLBACK_TOLERANCE_S (dual-boot skew, VM suspend/resume)
+        is logged, one entry per episode, and surfaced by status(); the
+        store is never refused or bricked in 0.1.x (hard guard + escape
+        hatch is a 0.2.0 item). Returns True when the caller should save.
+        """
+        changed = False
+        high = data.get("clock_high_water")
+        if high is not None:
+            try:
+                hw = _parse_dt(high)
+            except CapsuleError:
+                hw = None
+            if hw is not None:
+                delta = (now - hw).total_seconds()
+                if delta < -CLOCK_ROLLBACK_TOLERANCE_S:
+                    log = data.setdefault("clock_rollbacks", [])
+                    if not log or log[-1].get("high_water") != high:
+                        log.append({"detected_at": _dt(now), "now": _dt(now),
+                                    "high_water": high, "delta_s": int(delta)})
+                        del log[:-CLOCK_ROLLBACK_LOG_MAX]  # keep the newest N
+                        changed = True
+        now_iso = _dt(now)
+        if high is None or now_iso > high:
+            data["clock_high_water"] = now_iso
+            changed = True
+        return changed
 
     def _refresh(self, data, now):
         """Advance statuses lazily. Returns True if anything changed.
@@ -228,6 +367,9 @@ class TimeCapsule:
                         "sealed_at": capsule.get("sealed_at", ""),
                         "deleted_at": _dt(now),
                         "reason": "deletion countdown expired",
+                        "pending_deletion_at": capsule.get("pending_deletion_at"),
+                        "was_opened": bool(capsule.get("opened_at")),
+                        "condition_type": capsule.get("condition", {}).get("type"),
                     })
                     changed = True
                     continue  # drop the capsule: it is gone
@@ -257,18 +399,8 @@ class TimeCapsule:
             raise CapsuleError(f"release_condition must be one of {CONDITION_TYPES}")
         if label and len(label) > LABEL_MAX:
             raise CapsuleError(f"label exceeds {LABEL_MAX} characters")
-        try:
-            grace_days = int(grace_days)
-        except (TypeError, ValueError):
-            raise CapsuleError("grace_days must be an integer")
-        if not 0 <= grace_days <= GRACE_DAYS_MAX:
-            raise CapsuleError(f"grace_days must be 0..{GRACE_DAYS_MAX}")
-        try:
-            delete_days = int(delete_days)
-        except (TypeError, ValueError):
-            raise CapsuleError("delete_days must be an integer")
-        if not DELETE_DAYS_MIN <= delete_days <= DELETE_DAYS_MAX:
-            raise CapsuleError(f"delete_days must be {DELETE_DAYS_MIN}..{DELETE_DAYS_MAX}")
+        grace_days = _int_arg("grace_days", grace_days, 0, GRACE_DAYS_MAX)
+        delete_days = _int_arg("delete_days", delete_days, DELETE_DAYS_MIN, DELETE_DAYS_MAX)
 
         condition = {"type": condition_type}
         if condition_type == "date":
@@ -278,21 +410,17 @@ class TimeCapsule:
         elif condition_type == "silence":
             if silence_days is None:
                 raise CapsuleError("release_condition 'silence' needs silence_days")
-            try:
-                silence_days = int(silence_days)
-            except (TypeError, ValueError):
-                raise CapsuleError("silence_days must be an integer")
-            if not SILENCE_DAYS_MIN <= silence_days <= SILENCE_DAYS_MAX:
-                raise CapsuleError(f"silence_days must be {SILENCE_DAYS_MIN}..{SILENCE_DAYS_MAX}")
+            silence_days = _int_arg("silence_days", silence_days, SILENCE_DAYS_MIN, SILENCE_DAYS_MAX)
             condition["days"] = silence_days
 
         with _FileLock(self.root):
             data = self._load()
+            now = self._now()
+            self._clock_watch(data, now)
+            self._refresh(data, now)  # free expired pending-deletion slots before the cap check
             if len(data["capsules"]) >= MAX_CAPSULES:
                 raise CapsuleError(f"store holds the maximum of {MAX_CAPSULES} capsules — "
                                    "open or delete one first")
-            now = self._now()
-            self._refresh(data, now)
             capsule_id = f"cap-{data['next_id']:04d}"
             data["next_id"] += 1
             capsule = {
@@ -320,7 +448,7 @@ class TimeCapsule:
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
-            changed = self._refresh(data, now)
+            changed = self._refresh(data, now) or self._clock_watch(data, now)
             if changed:
                 self._save(data)
         capsules = [_public(c) for c in data["capsules"]]
@@ -330,19 +458,36 @@ class TimeCapsule:
             capsules = [c for c in capsules if c["status"] == status_filter]
         return {"capsules": capsules, "count": len(capsules)}
 
+    def _refuse(self, message, capsule, now, eligible_at=None):
+        """Raise an honest refusal whose details are machine-readable.
+
+        details carries the capsule status; when a concrete time is
+        known (grace end, condition date, deletion bound), it carries
+        eligible_at + remaining_seconds. Never fabricate a time: a
+        wrong-author manual refusal has no eligibility.
+        """
+        details = {"status": capsule["status"]}
+        if eligible_at is not None:
+            details["eligible_at"] = _dt(eligible_at)
+            details["remaining_seconds"] = max(0, int((eligible_at - now).total_seconds()))
+        raise CapsuleError(message, details=details)
+
     def open_capsule(self, capsule_id, author=""):
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
+            self._clock_watch(data, now)
             self._refresh(data, now)
             capsule = self._find(data, capsule_id)
             self._touch(data, now)
             status = capsule["status"]
             if status == "pending-deletion":
                 self._save(data)
-                raise CapsuleError(
+                self._refuse(
                     f"{capsule_id} is pending deletion (gone {capsule['delete_after']}) — "
-                    "restore it first if you want it back")
+                    "restore it first if you want it back",
+                    capsule, now,
+                    eligible_at=_parse_dt(capsule["delete_after"]) if capsule.get("delete_after") else None)
             if status == "open":
                 capsule["opened_at"] = capsule.get("opened_at") or _dt(now)
                 self._save(data)
@@ -350,18 +495,21 @@ class TimeCapsule:
                         "content": capsule["message"], "opened_at": capsule["opened_at"]}
             if status == "grace":
                 self._save(data)
-                raise CapsuleError(
+                self._refuse(
                     f"{capsule_id} is in grace until {capsule['grace_ends_at']} — "
-                    "the sealer can re-seal it, or wait for the grace to end")
+                    "the sealer can re-seal it, or wait for the grace to end",
+                    capsule, now,
+                    eligible_at=_parse_dt(capsule["grace_ends_at"]) if capsule.get("grace_ends_at") else None)
             # sealed
             cond = capsule["condition"]
             if cond["type"] == "manual":
                 sealed_by = capsule.get("sealed_by", "")
                 if sealed_by and (author or "").strip() != sealed_by:
                     self._save(data)
-                    raise CapsuleError(
+                    self._refuse(
                         f"{capsule_id} is manual-release and was sealed by {sealed_by} — "
-                        "only the sealer can release it")
+                        "only the sealer can release it",
+                        capsule, now)
                 capsule["status"] = "grace"
                 capsule["grace_started_at"] = _dt(now)
                 capsule["grace_ends_at"] = _dt(now + timedelta(days=capsule.get("grace_days", 3)))
@@ -372,25 +520,36 @@ class TimeCapsule:
                     return {"ok": True, "id": capsule_id, "label": capsule.get("label", ""),
                             "content": capsule["message"], "opened_at": capsule["opened_at"]}
                 self._save(data)
-                raise CapsuleError(
+                self._refuse(
                     f"{capsule_id} released into grace until {capsule['grace_ends_at']} — "
-                    "call open again after the grace ends")
+                    "call open again after the grace ends",
+                    capsule, now,
+                    eligible_at=_parse_dt(capsule["grace_ends_at"]) if capsule.get("grace_ends_at") else None)
             if cond["type"] == "date":
                 self._save(data)
-                raise CapsuleError(
+                self._refuse(
                     f"{capsule_id} is sealed until {cond['date']} — "
-                    "the date has not arrived yet")
+                    "the date has not arrived yet",
+                    capsule, now, eligible_at=_parse_dt(cond["date"]))
             # silence, not yet met
             last = data.get("last_activity_at")
             self._save(data)
-            raise CapsuleError(
+            eligible = None
+            if last:
+                try:
+                    eligible = _parse_dt(last) + timedelta(days=cond["days"])
+                except CapsuleError:
+                    eligible = None
+            self._refuse(
                 f"{capsule_id} is sealed until {cond['days']} days of silence — "
-                f"last activity was {last or 'never'}")
+                f"last activity was {last or 'never'}",
+                capsule, now, eligible_at=eligible)
 
     def delete_capsule(self, capsule_id, delete_days=None):
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
+            self._clock_watch(data, now)
             self._refresh(data, now)
             capsule = self._find(data, capsule_id)
             if capsule["status"] == "pending-deletion":
@@ -398,12 +557,7 @@ class TimeCapsule:
                         "delete_after": capsule["delete_after"],
                         "note": "already pending deletion"}
             if delete_days is not None:
-                try:
-                    delete_days = int(delete_days)
-                except (TypeError, ValueError):
-                    raise CapsuleError("delete_days must be an integer")
-                if not DELETE_DAYS_MIN <= delete_days <= DELETE_DAYS_MAX:
-                    raise CapsuleError(f"delete_days must be {DELETE_DAYS_MIN}..{DELETE_DAYS_MAX}")
+                delete_days = _int_arg("delete_days", delete_days, DELETE_DAYS_MIN, DELETE_DAYS_MAX)
             else:
                 delete_days = capsule.get("delete_days", 7)
             capsule["status"] = "pending-deletion"
@@ -421,6 +575,7 @@ class TimeCapsule:
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
+            self._clock_watch(data, now)
             self._refresh(data, now)
             capsule = self._find(data, capsule_id)
             if capsule["status"] != "pending-deletion":
@@ -437,6 +592,7 @@ class TimeCapsule:
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
+            self._clock_watch(data, now)
             self._refresh(data, now)
             capsule = self._find(data, capsule_id)
             if capsule["status"] != "grace":
@@ -452,13 +608,14 @@ class TimeCapsule:
             self._touch(data, now)
             self._save(data)
         return {"ok": True, "id": capsule_id, "status": "sealed",
-                "note": "re-sealed — the release condition applies again from now"}
+                "note": "re-sealed — the release condition still applies; a date "
+                        "capsule past its date re-enters grace on the next observation"}
 
     def status(self):
         with _FileLock(self.root):
             data = self._load()
             now = self._now()
-            changed = self._refresh(data, now)
+            changed = self._refresh(data, now) or self._clock_watch(data, now)
             if changed:
                 self._save(data)
         counts = {s: 0 for s in STATUSES}
@@ -470,5 +627,10 @@ class TimeCapsule:
             "deletions_announced": len(data["deletions"]),
             "deletions": data["deletions"],
             "last_activity_at": data.get("last_activity_at"),
+            "clock": {
+                "high_water": data.get("clock_high_water"),
+                "rollbacks_detected": len(data.get("clock_rollbacks", [])),
+                "last_rollback": (data.get("clock_rollbacks") or [None])[-1],
+            },
             "store": str(self._store_path),
         }

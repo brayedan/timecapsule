@@ -4,15 +4,19 @@
 """
 
 import json
+import os
 import pathlib
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from timecapsule_engine import CapsuleError, TimeCapsule
+import timecapsule_engine
+from timecapsule_engine import CapsuleError, TimeCapsule, _FileLock
 
 T0 = datetime(2026, 11, 8, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -287,6 +291,272 @@ class TestStatus(unittest.TestCase):
         self.assertEqual(st["counts"]["open"], 0)
         self.assertEqual(st["total_capsules"], 2)
         self.assertEqual(st["deletions_announced"], 0)
+
+
+class TestBatchFixes(unittest.TestCase):
+    def test_seal_at_cap_with_expired_pending_frees_a_slot(self):
+        root, clock, tc = _fresh()
+        rows = []
+        for i in range(1, 100):
+            rows.append({"id": f"cap-{i:04d}", "label": "", "sealed_by": "",
+                         "sealed_at": "2026-11-08T12:00:00+00:00", "message": "x",
+                         "condition": {"type": "manual"}, "grace_days": 3, "delete_days": 7,
+                         "status": "sealed", "grace_started_at": None, "grace_ends_at": None,
+                         "pending_deletion_at": None, "delete_after": None, "opened_at": None})
+        rows.append({"id": "cap-0100", "label": "", "sealed_by": "",
+                     "sealed_at": "2026-11-08T12:00:00+00:00", "message": "doomed",
+                     "condition": {"type": "manual"}, "grace_days": 3, "delete_days": 7,
+                     "status": "pending-deletion", "grace_started_at": None, "grace_ends_at": None,
+                     "pending_deletion_at": "2026-11-08T12:00:00+00:00",
+                     "delete_after": "2026-11-09T12:00:00+00:00", "opened_at": None})
+        store = {"version": 1, "next_id": 101, "last_activity_at": "2026-11-08T12:00:00+00:00",
+                 "capsules": rows, "deletions": []}
+        (root / "store.json").write_text(json.dumps(store))
+        clock.advance(days=10)  # delete_after long past: refresh must free the slot
+        r = tc.seal("the freed slot", "manual", author="hyperion")
+        self.assertEqual(r["id"], "cap-0101")
+        self.assertEqual(tc.status()["total_capsules"], 100)
+
+    def test_grace_starts_at_first_observation_not_condition_date(self):
+        _, clock, tc = _fresh()
+        tc.seal("late first look", "date", release_date="2026-11-10T00:00:00Z", grace_days=3)
+        # Condition is met only after the seal; the capsule stays sealed until
+        # an operation observes it. grace_started_at must be the observation
+        # time (first refresh), not the condition date.
+        clock.advance(days=5)
+        c = tc.list_capsules()["capsules"][0]
+        self.assertEqual(c["status"], "grace")
+        self.assertEqual(c["grace_started_at"], "2026-11-13T12:00:00+00:00")
+
+    def test_stale_lockfile_is_broken(self):
+        root, _, tc = _fresh()
+        lock = root / ".timecapsule.lock"
+        lock.write_text("99999")
+        old = time.time() - 45
+        os.utime(lock, (old, old))
+        r = tc.seal("after stale lock", "manual", author="hyperion")
+        self.assertEqual(r["id"], "cap-0001")
+
+    def test_corrupt_store_raises_and_bytes_unchanged(self):
+        root, _, tc = _fresh()
+        (root / "store.json").write_text("{not json")
+        with self.assertRaises(CapsuleError) as cm:
+            tc.seal("x", "manual", author="hyperion")
+        self.assertIn("corrupt", str(cm.exception))
+        self.assertEqual((root / "store.json").read_text(), "{not json")
+
+    def test_row_missing_status_raises_capsule_error_not_keyerror(self):
+        root, _, tc = _fresh()
+        store = {"version": 1, "next_id": 2, "last_activity_at": None,
+                 "capsules": [{"id": "cap-0001", "label": "", "sealed_by": "",
+                               "sealed_at": "2026-11-08T12:00:00+00:00", "message": "x",
+                               "condition": {"type": "manual"}, "grace_days": 3, "delete_days": 7,
+                               "grace_started_at": None, "grace_ends_at": None,
+                               "pending_deletion_at": None, "delete_after": None,
+                               "opened_at": None}],  # no "status" key
+                 "deletions": []}
+        (root / "store.json").write_text(json.dumps(store))
+        with self.assertRaises(CapsuleError) as cm:
+            tc.seal("x", "manual", author="hyperion")
+        self.assertIn("unexpected shape", str(cm.exception))
+
+
+class TestFileLock(unittest.TestCase):
+    def test_lock_exit_keeps_foreign_token_lockfile(self):
+        root, _, _ = _fresh()
+        a = _FileLock(root)
+        b = _FileLock(root)
+        a.__enter__()
+        a.__exit__(None, None, None)           # released cleanly
+        b.__enter__()                          # b owns the lockfile now (token_b)
+        a._token = "stale-a-token"
+        a.__exit__(None, None, None)           # stale holder releases: must NOT delete b's lock
+        self.assertTrue((root / ".timecapsule.lock").exists())
+        b.__exit__(None, None, None)
+        self.assertFalse((root / ".timecapsule.lock").exists())
+
+    def test_lock_acquire_permission_error_times_out_not_hangs(self):
+        root, _, tc = _fresh()
+        old = timecapsule_engine.LOCK_TIMEOUT_S
+        timecapsule_engine.LOCK_TIMEOUT_S = 0.2
+        try:
+            with mock.patch("timecapsule_engine.os.open", side_effect=PermissionError("denied")):
+                start = time.time()
+                with self.assertRaises(CapsuleError):
+                    tc.seal("x", "manual", author="hyperion")
+                self.assertLess(time.time() - start, 5)
+        finally:
+            timecapsule_engine.LOCK_TIMEOUT_S = old
+
+
+class TestAtomicWrite(unittest.TestCase):
+    def test_replace_retries_then_succeeds(self):
+        root, _, _ = _fresh()
+        target = root / "store.json"
+        real_replace = timecapsule_engine.os.replace
+        calls = {"n": 0}
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise PermissionError("busy")
+            real_replace(src, dst)
+
+        with mock.patch("timecapsule_engine.os.replace", side_effect=flaky):
+            timecapsule_engine._atomic_write(target, "hello")
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(target.read_text(), "hello")
+        self.assertEqual(list(root.glob("*.tmp")), [])
+
+    def test_replace_five_failures_reraises_and_cleans_tmp(self):
+        root, _, _ = _fresh()
+        target = root / "store.json"
+        with mock.patch("timecapsule_engine.os.replace", side_effect=PermissionError("busy")):
+            with self.assertRaises(PermissionError):
+                timecapsule_engine._atomic_write(target, "hello")
+        self.assertFalse(target.exists())
+        self.assertEqual(list(root.glob("*.tmp")), [])
+
+
+class TestIntArg(unittest.TestCase):
+    def test_strict_coercion(self):
+        from timecapsule_engine import _int_arg
+        with self.assertRaises(CapsuleError):
+            _int_arg("grace_days", True, 0, 30)
+        with self.assertRaises(CapsuleError):
+            _int_arg("grace_days", 3.9, 0, 30)
+        with self.assertRaises(CapsuleError):
+            _int_arg("grace_days", float("nan"), 0, 30)
+        with self.assertRaises(CapsuleError):
+            _int_arg("grace_days", float("inf"), 0, 30)
+        self.assertEqual(_int_arg("grace_days", 3.0, 0, 30), 3)
+        self.assertEqual(_int_arg("grace_days", "3", 0, 30), 3)
+        with self.assertRaises(CapsuleError):
+            _int_arg("grace_days", 31, 0, 30)
+        with self.assertRaises(CapsuleError):
+            _int_arg("grace_days", None, 0, 30)
+
+
+class TestDateParsing(unittest.TestCase):
+    def test_parse_edge_cases(self):
+        from timecapsule_engine import _parse_dt
+        self.assertEqual(_parse_dt("2026-11-11T15:00:00.5Z").isoformat(),
+                         "2026-11-11T15:00:00.500000+00:00")
+        dt = _parse_dt("2026-11-11T15:00:00+05:30")
+        self.assertEqual(dt.isoformat(), "2026-11-11T09:30:00+00:00")
+        self.assertEqual(_parse_dt("2026-11-11").isoformat(), "2026-11-11T00:00:00+00:00")
+        self.assertEqual(_parse_dt("9999-12-31T23:59:59Z").year, 9999)
+
+
+class TestStructuredRefusals(unittest.TestCase):
+    def _refusal(self, tc, cid, author=""):
+        try:
+            tc.open_capsule(cid, author)
+            self.fail("expected CapsuleError")
+        except CapsuleError as e:
+            return e
+
+    def test_date_refusal_details(self):
+        _, _, tc = _fresh()
+        tc.seal("x", "date", release_date="2026-11-11T15:00:00Z", grace_days=3)
+        e = self._refusal(tc, "cap-0001")
+        self.assertEqual(e.details["status"], "sealed")
+        self.assertEqual(e.details["eligible_at"], "2026-11-11T15:00:00+00:00")
+        self.assertGreater(e.details["remaining_seconds"], 0)
+
+    def test_silence_refusal_details(self):
+        _, _, tc = _fresh()
+        tc.seal("x", "silence", silence_days=2, grace_days=0)
+        e = self._refusal(tc, "cap-0001")
+        self.assertEqual(e.details["eligible_at"], "2026-11-10T12:00:00+00:00")  # T0 + 2 days
+        self.assertEqual(e.details["remaining_seconds"], 2 * 24 * 3600)
+
+    def test_grace_refusal_details(self):
+        _, _, tc = _fresh()
+        tc.seal("x", "date", release_date="2026-11-01T00:00:00Z", grace_days=3)
+        tc.list_capsules()  # enters grace
+        e = self._refusal(tc, "cap-0001")
+        self.assertEqual(e.details["status"], "grace")
+        self.assertEqual(e.details["eligible_at"], "2026-11-11T12:00:00+00:00")  # T0 + 3 days
+        self.assertGreater(e.details["remaining_seconds"], 0)
+
+    def test_pending_deletion_refusal_details(self):
+        _, _, tc = _fresh()
+        tc.seal("x", "manual", author="hyperion")
+        tc.delete_capsule("cap-0001")
+        e = self._refusal(tc, "cap-0001")
+        self.assertEqual(e.details["status"], "pending-deletion")
+        self.assertEqual(e.details["eligible_at"], "2026-11-15T12:00:00+00:00")  # T0 + 7 days
+        self.assertGreater(e.details["remaining_seconds"], 0)
+
+    def test_manual_wrong_author_refusal_has_no_timing(self):
+        _, _, tc = _fresh()
+        tc.seal("x", "manual", author="hyperion", grace_days=0)
+        e = self._refusal(tc, "cap-0001", author="decomp")
+        self.assertEqual(e.details, {"status": "sealed"})
+
+
+class TestDeletionLog(unittest.TestCase):
+    def test_deletion_announcement_carries_new_fields(self):
+        root, clock, tc = _fresh()
+        tc.seal("short-lived", "manual", author="hyperion", delete_days=1)
+        tc.delete_capsule("cap-0001")
+        clock.advance(days=1)
+        st = tc.status()
+        entry = st["deletions"][0]
+        self.assertEqual(entry["condition_type"], "manual")
+        self.assertIs(entry["was_opened"], False)
+        self.assertEqual(entry["pending_deletion_at"], "2026-11-08T12:00:00+00:00")
+
+
+class TestClockRollback(unittest.TestCase):
+    def _clock(self, tc):
+        return tc.status()["clock"]
+
+    def test_rollback_over_tolerance_recorded(self):
+        root, clock, tc = _fresh()
+        tc.seal("a", "manual", author="hyperion")   # high-water = T0, saved
+        clock.advance(days=-1)
+        ck = self._clock(tc)
+        self.assertEqual(ck["rollbacks_detected"], 1)
+        self.assertEqual(ck["last_rollback"]["delta_s"], -86400)
+        self.assertEqual(ck["high_water"], "2026-11-08T12:00:00+00:00")
+        # recorded on disk, not only in memory
+        store = json.loads((root / "store.json").read_text())
+        self.assertEqual(len(store["clock_rollbacks"]), 1)
+
+    def test_rollback_under_tolerance_ignored(self):
+        _, clock, tc = _fresh()
+        tc.seal("a", "manual", author="hyperion")
+        clock.advance(minutes=-1)
+        ck = self._clock(tc)
+        self.assertEqual(ck["rollbacks_detected"], 0)
+
+    def test_same_episode_not_duplicated(self):
+        _, clock, tc = _fresh()
+        tc.seal("a", "manual", author="hyperion")
+        clock.advance(days=-1)
+        self.assertEqual(self._clock(tc)["rollbacks_detected"], 1)
+        self.assertEqual(self._clock(tc)["rollbacks_detected"], 1)
+
+    def test_log_caps_at_10_keeps_newest(self):
+        _, clock, tc = _fresh()
+        tc.seal("a", "manual", author="hyperion")
+        for _ in range(1, 12):
+            clock.advance(days=-1, hours=-6)   # back before the high-water: record an episode
+            tc.status()
+            clock.advance(hours=36)            # forward past it, and persist the high-water
+            tc.status()
+        ck = self._clock(tc)
+        self.assertEqual(ck["rollbacks_detected"], 10)
+        self.assertEqual(ck["last_rollback"]["high_water"], "2026-11-11T00:00:00+00:00")
+
+    def test_rollback_never_refuses(self):
+        _, clock, tc = _fresh()
+        tc.seal("a", "manual", author="hyperion")
+        clock.advance(days=-2)
+        r = tc.seal("b", "manual", author="hyperion")
+        self.assertTrue(r["sealed"])
 
 
 if __name__ == "__main__":

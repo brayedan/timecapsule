@@ -56,7 +56,10 @@ try:
         try:
             return _timecapsule().list_capsules(status or None)
         except CapsuleError as e:
-            return {"ok": False, "error": str(e)}
+            out = {"ok": False, "error": str(e)}
+            if getattr(e, "details", None):
+                out["details"] = e.details
+            return out
 
     @router.get("/capsules/{capsule_id}")
     def show_capsule(capsule_id: str):
@@ -79,14 +82,20 @@ try:
                 out["content"] = capsule["message"] if capsule["status"] == "open" else None
                 return out
         except CapsuleError as e:
-            return {"ok": False, "error": str(e)}
+            out = {"ok": False, "error": str(e)}
+            if getattr(e, "details", None):
+                out["details"] = e.details
+            return out
 
     @router.get("/status")
     def status():
         try:
             return _timecapsule().status()
         except CapsuleError as e:
-            return {"ok": False, "error": str(e)}
+            out = {"ok": False, "error": str(e)}
+            if getattr(e, "details", None):
+                out["details"] = e.details
+            return out
 
     @router.post("/seal")
     async def seal(request: Request):
@@ -104,7 +113,10 @@ try:
                 label=data.get("label") or "",
             )
         except CapsuleError as e:
-            return {"ok": False, "error": str(e)}
+            out = {"ok": False, "error": str(e)}
+            if getattr(e, "details", None):
+                out["details"] = e.details
+            return out
 
     @router.post("/capsules/{capsule_id}/open")
     async def open_capsule(capsule_id: str, request: Request):
@@ -113,7 +125,10 @@ try:
             c = _timecapsule()
             return c.open_capsule(capsule_id, (data.get("author") or ""))
         except CapsuleError as e:
-            return {"ok": False, "error": str(e)}
+            out = {"ok": False, "error": str(e)}
+            if getattr(e, "details", None):
+                out["details"] = e.details
+            return out
 
     @router.post("/capsules/{capsule_id}/delete")
     async def delete_capsule(capsule_id: str, request: Request):
@@ -122,7 +137,10 @@ try:
             c = _timecapsule()
             return c.delete_capsule(capsule_id, data.get("delete_days"))
         except CapsuleError as e:
-            return {"ok": False, "error": str(e)}
+            out = {"ok": False, "error": str(e)}
+            if getattr(e, "details", None):
+                out["details"] = e.details
+            return out
 
     @router.post("/capsules/{capsule_id}/restore")
     async def restore_capsule(capsule_id: str):
@@ -130,7 +148,10 @@ try:
             c = _timecapsule()
             return c.restore_capsule(capsule_id)
         except CapsuleError as e:
-            return {"ok": False, "error": str(e)}
+            out = {"ok": False, "error": str(e)}
+            if getattr(e, "details", None):
+                out["details"] = e.details
+            return out
 
     @router.post("/capsules/{capsule_id}/reseal")
     async def reseal_capsule(capsule_id: str, request: Request):
@@ -139,7 +160,10 @@ try:
             c = _timecapsule()
             return c.reseal_capsule(capsule_id, (data.get("author") or ""))
         except CapsuleError as e:
-            return {"ok": False, "error": str(e)}
+            out = {"ok": False, "error": str(e)}
+            if getattr(e, "details", None):
+                out["details"] = e.details
+            return out
 
 except ImportError:
     # FastAPI not importable in this context (e.g. linting the file outside

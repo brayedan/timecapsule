@@ -41,8 +41,11 @@ def _ok(payload):
     return json.dumps(payload)
 
 
-def _err(message):
-    return json.dumps({"ok": False, "error": message})
+def _err(message, details=None):
+    payload = {"ok": False, "error": message}
+    if details:
+        payload["details"] = details
+    return json.dumps(payload)
 
 
 def timecapsule_seal(args, **kwargs):
@@ -59,7 +62,7 @@ def timecapsule_seal(args, **kwargs):
             label=args.get("label") or "",
         ))
     except CapsuleError as e:
-        return _err(str(e))
+        return _err(str(e), details=getattr(e, "details", None))
     except Exception as e:
         return _err(f"timecapsule_seal failed: {e}")
 
@@ -69,7 +72,7 @@ def timecapsule_list(args, **kwargs):
         c = _timecapsule()
         return _ok(c.list_capsules(args.get("status")))
     except CapsuleError as e:
-        return _err(str(e))
+        return _err(str(e), details=getattr(e, "details", None))
     except Exception as e:
         return _err(f"timecapsule_list failed: {e}")
 
@@ -82,7 +85,7 @@ def timecapsule_open(args, **kwargs):
             return _err("capsule_id is required")
         return _ok(c.open_capsule(capsule_id, args.get("author") or ""))
     except CapsuleError as e:
-        return _err(str(e))
+        return _err(str(e), details=getattr(e, "details", None))
     except Exception as e:
         return _err(f"timecapsule_open failed: {e}")
 
@@ -95,7 +98,7 @@ def timecapsule_delete(args, **kwargs):
             return _err("capsule_id is required")
         return _ok(c.delete_capsule(capsule_id, args.get("delete_days")))
     except CapsuleError as e:
-        return _err(str(e))
+        return _err(str(e), details=getattr(e, "details", None))
     except Exception as e:
         return _err(f"timecapsule_delete failed: {e}")
 
@@ -108,7 +111,7 @@ def timecapsule_restore(args, **kwargs):
             return _err("capsule_id is required")
         return _ok(c.restore_capsule(capsule_id))
     except CapsuleError as e:
-        return _err(str(e))
+        return _err(str(e), details=getattr(e, "details", None))
     except Exception as e:
         return _err(f"timecapsule_restore failed: {e}")
 
@@ -121,7 +124,7 @@ def timecapsule_reseal(args, **kwargs):
             return _err("capsule_id is required")
         return _ok(c.reseal_capsule(capsule_id, args.get("author") or ""))
     except CapsuleError as e:
-        return _err(str(e))
+        return _err(str(e), details=getattr(e, "details", None))
     except Exception as e:
         return _err(f"timecapsule_reseal failed: {e}")
 
@@ -131,6 +134,6 @@ def timecapsule_status(args, **kwargs):
         c = _timecapsule()
         return _ok(c.status())
     except CapsuleError as e:
-        return _err(str(e))
+        return _err(str(e), details=getattr(e, "details", None))
     except Exception as e:
         return _err(f"timecapsule_status failed: {e}")
