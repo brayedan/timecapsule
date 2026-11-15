@@ -209,15 +209,54 @@ class TimeCapsule:
                     "capsules": [], "deletions": []}
         try:
             data = json.loads(self._store_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError:
             raise CapsuleError("store.json is corrupt — refusing to touch it "
                                "(back it up, fix or delete it by hand)")
+        except OSError as e:
+            raise CapsuleError(f"store.json could not be read: {e} — refusing to touch it")
         if not isinstance(data, dict) or "capsules" not in data:
             raise CapsuleError("store.json has an unexpected shape — refusing to touch it")
+        if not isinstance(data.get("next_id"), int):
+            raise CapsuleError("store.json has an unexpected shape — refusing to touch it")
+        if not isinstance(data["capsules"], list) or not all(
+                self._valid_row(c) for c in data["capsules"]):
+            raise CapsuleError("store.json has an unexpected shape — refusing to touch it")
         data.setdefault("deletions", [])
-        data.setdefault("next_id", 1)
         data.setdefault("last_activity_at", None)
         return data
+
+    @staticmethod
+    def _valid_row(c):
+        """Shape + scalar-type validation for a capsules[] row.
+
+        Wrong shape is treated as corruption: refuse cleanly, never crash
+        a caller with KeyError/TypeError, never touch the file.
+        """
+        if not isinstance(c, dict):
+            return False
+        if not _ID_RE.fullmatch(str(c.get("id", ""))):
+            return False
+        if not isinstance(c.get("message"), str):
+            return False
+        if c.get("status") not in STATUSES:
+            return False
+        cond = c.get("condition")
+        if not isinstance(cond, dict) or cond.get("type") not in CONDITION_TYPES:
+            return False
+        if cond.get("type") == "date" and not isinstance(cond.get("date"), str):
+            return False
+        if cond.get("type") == "silence" and not isinstance(cond.get("days"), int):
+            return False
+        for field in ("grace_days", "delete_days"):
+            v = c.get(field)
+            if v is not None and not isinstance(v, int):
+                return False
+        for field in ("sealed_at", "grace_started_at", "grace_ends_at",
+                      "pending_deletion_at", "delete_after", "opened_at"):
+            v = c.get(field)
+            if v is not None and not isinstance(v, str):
+                return False
+        return True
 
     def _save(self, data):
         _atomic_write(self._store_path, json.dumps(data, indent=2))
