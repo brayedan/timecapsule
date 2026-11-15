@@ -138,10 +138,34 @@ class _FileLock:
 
 def _atomic_write(path, text):
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        # Windows: the destination may be held open (e.g. the dashboard
+        # reading it) — retry the rename briefly before giving up.
+        last_exc = None
+        for _ in range(5):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError as e:
+                last_exc = e
+                time.sleep(0.05)
+        else:
+            if last_exc is None:  # pragma: no cover — all attempts raise, so it is set
+                raise RuntimeError("atomic write failed without an exception")
+            raise last_exc
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _check_id(capsule_id):
