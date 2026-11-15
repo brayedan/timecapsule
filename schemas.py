@@ -1,5 +1,15 @@
 """Tool schemas — what the LLM reads to decide when to call each tool."""
 
+from .timecapsule_engine import (
+    DELETE_DAYS_MAX,
+    DELETE_DAYS_MIN,
+    GRACE_DAYS_MAX,
+    LABEL_MAX,
+    MESSAGE_MAX,
+    SILENCE_DAYS_MAX,
+    SILENCE_DAYS_MIN,
+)
+
 TIMECAPSULE_SEAL = {
     "name": "timecapsule_seal",
     "description": (
@@ -14,19 +24,19 @@ TIMECAPSULE_SEAL = {
     "parameters": {
         "type": "object",
         "properties": {
-            "message": {"type": "string", "description": "The message to seal (max 20,000 chars)."},
+            "message": {"type": "string", "description": f"The message to seal (max {MESSAGE_MAX:,} chars)."},
             "release_condition": {"type": "string", "enum": ["date", "silence", "manual"],
                                   "description": "How the capsule releases."},
             "release_date": {"type": "string",
                              "description": "Required for 'date': ISO 8601 date/datetime, e.g. 2026-11-11T15:00:00Z."},
             "silence_days": {"type": "integer",
-                             "description": "Required for 'silence': days of no activity before release (1-365)."},
+                             "description": f"Required for 'silence': days of no activity before release ({SILENCE_DAYS_MIN}-{SILENCE_DAYS_MAX})."},
             "grace_days": {"type": "integer",
-                           "description": "Grace period after the condition is met, during which the sealer can re-seal (default 3, 0 = open immediately)."},
+                           "description": f"Grace period after the condition is met, during which the sealer can re-seal (default 3, 0..{GRACE_DAYS_MAX}, 0 = open immediately)."},
             "delete_days": {"type": "integer",
-                            "description": "Deletion countdown once delete is called (default 7, 1-30)."},
+                            "description": f"Deletion countdown once delete is called (default 7, {DELETE_DAYS_MIN}-{DELETE_DAYS_MAX})."},
             "author": {"type": "string", "description": "Who is sealing it (your agent handle)."},
-            "label": {"type": "string", "description": "Short label shown in listings (max 100 chars)."},
+            "label": {"type": "string", "description": f"Short label shown in listings (max {LABEL_MAX} chars)."},
         },
         "required": ["message", "release_condition"],
     },
@@ -56,7 +66,9 @@ TIMECAPSULE_OPEN = {
         "has been met and the grace period has ended. Otherwise it refuses "
         "honestly and says why (date not arrived, silence not reached, in "
         "grace, pending deletion) and what remains. Manual-release capsules "
-        "open only for the sealer."
+        "open only for the sealer. Checking on a silent capsule with open "
+        "counts as activity and resets its silence clock — use list/status "
+        "to check whether it is ready."
     ),
     "parameters": {
         "type": "object",
@@ -81,7 +93,7 @@ TIMECAPSULE_DELETE = {
         "properties": {
             "capsule_id": {"type": "string", "description": "Capsule id, e.g. 'cap-0001'."},
             "delete_days": {"type": "integer",
-                            "description": "Override the countdown in days (1-30). Omit to use the capsule's own delete_days."},
+                            "description": f"Override the countdown in days ({DELETE_DAYS_MIN}-{DELETE_DAYS_MAX}). Omit to use the capsule's own delete_days."},
         },
         "required": ["capsule_id"],
     },
